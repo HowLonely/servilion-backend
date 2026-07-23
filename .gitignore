@@ -1,0 +1,53 @@
+# --- Entorno Virtual y Dependencias ---
+venv/
+env/
+ENV/
+.venv/
+
+# --- Bytecode compilado de Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Bases de Datos y Archivos de migración ---
+# Excluimos la base de datos local, pero mantenemos las migraciones (importantes)
+db.sqlite3
+db.sqlite3-journal
+.env
+.env.prod
+
+# --- Datos reales (Access legado y exports) ---
+# ejemplo_db_penon.mdb es la BD Access real de un cliente (datos de trabajadores,
+# empresas, guías); legacy_export/ es su volcado a JSONL. Nunca deben subirse.
+*.mdb
+*.ldb
+legacy_export/
+
+# --- Carpetas de IDE y sistema ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Logs y archivos temporales ---
+*.log
+*.tmp
+*.bak
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+celerybeat-schedule
+
+# --- Archivos generados por Django/Docker ---
+# Excluimos archivos estáticos recolectados y media, 
+# ya que S3 manejará los archivos pesados y la infraestructura recolectará los estáticos.
+static/
+media/
+staticfiles/
+
+# --- Docker ---
+# Excluimos volúmenes persistentes si los llegaras a crear en la raíz
+docker-data/

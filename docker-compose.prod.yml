@@ -1,0 +1,48 @@
+services:
+  db:
+    image: postgres:15-alpine
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    env_file:
+      - .env.prod
+
+  redis:
+    image: redis:7-alpine
+
+  api:
+    build: .
+    command: gunicorn core.asgi:application -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+    volumes:
+      - .:/app
+      - static_volume:/app/static
+    env_file:
+      - .env.prod
+    depends_on:
+      - db
+      - redis
+
+  celery_worker:
+    build: .
+    command: celery -A core worker --loglevel=info
+    volumes:
+      - .:/app
+    env_file:
+      - .env.prod
+    depends_on:
+      - db
+      - redis
+      - api
+
+  nginx:
+    image: nginx:1.25-alpine
+    volumes:
+      - ./nginx:/etc/nginx/conf.d
+      - static_volume:/app/static
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data_prod:
+  static_volume:
