@@ -49,6 +49,16 @@ class LaundryOrder(TimeStampedModel):
     worker = models.ForeignKey(Worker, on_delete=models.PROTECT, related_name='orders')
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='orders')
 
+    # Dónde debe entregarse ESTE morral. Se copia de `worker.current_room`
+    # al digitalizar y desde ahí queda congelado: si el trabajador se muda
+    # mientras su ropa está en planta, la guía sigue apuntando a la habitación
+    # que corresponde al momento en que entregó la ropa sucia. Null en las guías
+    # anteriores a la normalización de campamentos y en el Flujo 2, que no
+    # entrega por habitación.
+    delivery_room = models.ForeignKey(
+        'camps.Room', on_delete=models.SET_NULL, null=True, blank=True, related_name='deliveries'
+    )
+
     shift = models.CharField('Turno', max_length=10, blank=True)
     status = models.CharField(max_length=15, choices=OrderStatus.choices, default=OrderStatus.RECEIVED, db_index=True)
     garment_count = models.PositiveIntegerField(default=0)
@@ -249,6 +259,13 @@ class SiteScan(models.Model):
     )
     scanned_at = models.DateTimeField(db_index=True)
     scanned_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name='+')
+    # Habitación cuyo QR se escaneó (solo en pistoleos de ENTREGA). Es la
+    # evidencia de DÓNDE se dejó el morral, que puede no coincidir con
+    # `order.delivery_room` si el trabajador se mudó: en ese caso la app
+    # pide confirmación explícita y la discrepancia queda anotada en `note`.
+    room = models.ForeignKey(
+        'camps.Room', on_delete=models.SET_NULL, null=True, blank=True, related_name='scans'
+    )
     note = models.CharField(max_length=255, blank=True)
 
     class Meta:

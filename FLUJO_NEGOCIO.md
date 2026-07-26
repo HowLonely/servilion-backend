@@ -16,7 +16,7 @@ Este documento describe el **flujo operativo real** del negocio. La versión ant
 | **Trabajador** | Empleado de una empresa contratista. Entrega y recibe su ropa en un **morral**. Vive en un campamento/módulo de la faena. **No es usuario del sistema.** | `workers.Worker` |
 | **Supervisor Servilion en faena** | Recibe los morrales sucios del trabajador, coordina el traslado a Antofagasta y, al regreso, verifica la recepción de ropa limpia. | `authentication.User` (rol `SUPERVISOR`) |
 | **Operador en faena (app PEÑON)** | Pistolea recepciones y entregas en campamento. Pantalla con contadores de entregados/despachados. | App de faena → sync con backend |
-| **Staff de lavandería (Antofagasta)** | Digitaliza la OT, pistolea prendas, revisa, pesa, empaqueta y valida el morral antes del despacho. | `authentication.User` (roles `RECEPCION`, `LAVANDERIA`, `DESPACHO`, `ADMIN`) |
+| **Staff de lavandería (Antofagasta)** | Digitaliza la OT, pistolea prendas, revisa, pesa, empaqueta y valida el morral antes del despacho. | `authentication.User` (roles `DIGITADOR_OT`, `DIGITADOR_EMPAQUE`, `SUPERVISOR`, `ADMIN`) |
 | **Repartidor en faena (app Android)** | Entrega el morral limpio al trabajador en su habitación escaneando QR. Opera offline. | App móvil → sync con backend |
 
 La confusión más grande del sistema legado es que la tabla `usuarios` de Access mezclaba trabajadores (clientes del servicio) con lo que debería ser el registro de staff. En el modelo nuevo estos dos roles están separados a propósito.

@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     'common',
     'authentication',
     'companies',
+    'camps',
     'workers',
     'garments',
     'orders',

@@ -51,6 +51,8 @@ class LaundryOrderIn(Schema):
     observations: str = ''
     reference: str = ''
     control_code: str = ''
+    # Si no viene, se toma `worker.current_room` (ver services.create_order).
+    delivery_room_id: int | None = None
     items: list[OrderItemIn] = []
 
 
@@ -118,6 +120,9 @@ class LaundryOrderOut(Schema):
     observations: str
     reference: str
     control_code: str
+    delivery_room_id: int | None
+    room_number: str
+    camp_name: str
     photo_url: str | None
     billed_amount: float | None
     items: list[OrderItemOut]
@@ -143,6 +148,14 @@ class LaundryOrderOut(Schema):
     @staticmethod
     def resolve_delivery_flow(obj) -> str:
         return obj.company.delivery_flow
+
+    @staticmethod
+    def resolve_room_number(obj) -> str:
+        return obj.delivery_room.number if obj.delivery_room_id else ''
+
+    @staticmethod
+    def resolve_camp_name(obj) -> str:
+        return obj.delivery_room.camp.name if obj.delivery_room_id else ''
 
     @staticmethod
     def resolve_photo_url(obj) -> str | None:
@@ -311,6 +324,8 @@ class OrderSyncIn(Schema):
     observations: str = ''
     reference: str = ''
     control_code: str = ''
+    # Si no viene, se toma `worker.current_room` (ver services.create_order).
+    delivery_room_id: int | None = None
     items: list[OrderItemIn] = []
     updated_at: datetime
 
@@ -369,3 +384,53 @@ class BillingReportTaskOut(Schema):
 class BillingReportResultOut(Schema):
     status: str
     result: dict | None = None
+
+
+# --- Entrega en habitación (app móvil: QR de la OT + QR de la puerta) ---
+
+
+class DeliveryConfirmIn(Schema):
+    """Payload del doble escaneo que hace la app al dejar el morral.
+
+    `order_code` es lo que va impreso en la etiqueta/boleta (n° de OT, `ref` o
+    código de control, indistintamente). `room_qr` es el UUID pegado en la
+    puerta.
+    """
+
+    order_code: str
+    room_qr: UUID
+    note: str = ''
+    # La app opera offline-first: el momento real de la entrega es el del
+    # dispositivo, no el de la sincronización. Si no viene, se usa `now()`.
+    delivered_at: datetime | None = None
+    # El trabajador pudo mudarse después de digitalizar la guía. Ante esa
+    # discrepancia el endpoint responde 409 y solo procede si la app reenvía
+    # con este flag, dejando anotada la habitación real de entrega.
+    confirm_different_room: bool = False
+
+
+class DeliveryRoomOut(Schema):
+    id: int
+    number: str
+    camp_name: str
+    qr_code: UUID
+
+    @staticmethod
+    def resolve_camp_name(obj) -> str:
+        return obj.camp.name
+
+
+class DeliveryConfirmOut(Schema):
+    order: LaundryOrderOut
+    scanned_room: DeliveryRoomOut
+    expected_room: DeliveryRoomOut | None
+    room_matched: bool
+    delivered_at: datetime
+
+
+class DeliveryMismatchOut(Schema):
+    """409: el QR escaneado no es la habitación de destino de la guía."""
+
+    detail: str
+    scanned_room: DeliveryRoomOut
+    expected_room: DeliveryRoomOut | None

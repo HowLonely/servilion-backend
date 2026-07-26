@@ -35,3 +35,15 @@ def require_roles(*roles: str) -> Callable[[F], F]:
         return wrapper  # type: ignore[return-value]
 
     return decorator
+
+
+def require_admin() -> Callable[[F], F]:
+    """Reserva un handler para ADMIN.
+
+    Cubre la administración del catálogo y del dinero (clientes, empresas,
+    trabajadores, prendas, facturación y conflictos de sincronización), que es
+    justo lo que separa a ADMIN de SUPERVISOR. Existe como decorador propio
+    porque `require_roles(User.Role.ADMIN)` se apoya en que ADMIN atraviesa
+    toda restricción, y eso se lee como un descuido en vez de una decisión.
+    """
+    return require_roles(User.Role.ADMIN)

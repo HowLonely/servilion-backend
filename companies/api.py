@@ -4,8 +4,7 @@ from ninja import Router
 from ninja.pagination import paginate
 
 from authentication.auth import JWTAuth
-from authentication.models import User
-from authentication.permissions import require_roles
+from authentication.permissions import require_admin
 from companies import services
 from companies.schemas import (
     ClientGarmentPriceOut,
@@ -46,19 +45,19 @@ def get_client(request, client_id: int):
 
 
 @clients_router.post('/', response={201: ClientOut})
-@require_roles(User.Role.SUPERVISOR)
+@require_admin()
 def create_client(request, payload: ClientIn):
     return 201, services.create_client(payload)
 
 
 @clients_router.put('/{client_id}', response=ClientOut)
-@require_roles(User.Role.SUPERVISOR)
+@require_admin()
 def update_client(request, client_id: int, payload: ClientIn):
     return services.update_client(client_id, payload)
 
 
 @clients_router.delete('/{client_id}', response={204: None})
-@require_roles(User.Role.SUPERVISOR)
+@require_admin()
 def deactivate_client(request, client_id: int):
     services.deactivate_client(client_id)
     return 204, None
@@ -72,7 +71,7 @@ def list_client_prices(request, client_id: int):
 
 
 @clients_router.put('/{client_id}/prices', response=List[ClientGarmentPriceOut])
-@require_roles(User.Role.SUPERVISOR)
+@require_admin()
 def set_client_prices(request, client_id: int, payload: ClientPriceSetIn):
     return services.set_client_prices(client_id, payload.prices)
 
@@ -93,19 +92,19 @@ def get_company(request, company_id: int):
 
 
 @router.post('/', response={201: CompanyOut})
-@require_roles(User.Role.SUPERVISOR)
+@require_admin()
 def create_company(request, payload: CompanyIn):
     return 201, services.create_company(payload)
 
 
 @router.put('/{company_id}', response=CompanyOut)
-@require_roles(User.Role.SUPERVISOR)
+@require_admin()
 def update_company(request, company_id: int, payload: CompanyIn):
     return services.update_company(company_id, payload)
 
 
 @router.delete('/{company_id}', response={204: None})
-@require_roles(User.Role.SUPERVISOR)
+@require_admin()
 def deactivate_company(request, company_id: int):
     services.deactivate_company(company_id)
     return 204, None
