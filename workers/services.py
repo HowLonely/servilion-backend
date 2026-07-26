@@ -9,7 +9,9 @@ def list_workers(
     search: str | None = None,
     is_active: bool | None = None,
 ) -> QuerySet[Worker]:
-    queryset = Worker.objects.select_related('company').all()
+    queryset = Worker.objects.select_related(
+        'company', 'current_room', 'current_room__camp'
+    ).all()
     if company_id is not None:
         queryset = queryset.filter(company_id=company_id)
     if search:
@@ -24,7 +26,9 @@ def list_workers(
 
 
 def get_worker(worker_id: int) -> Worker:
-    return Worker.objects.select_related('company').get(pk=worker_id)
+    return Worker.objects.select_related(
+        'company', 'current_room', 'current_room__camp'
+    ).get(pk=worker_id)
 
 
 def create_worker(payload: WorkerIn) -> Worker:

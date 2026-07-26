@@ -8,8 +8,10 @@ from ninja.errors import ValidationError
 from authentication.api import router as auth_router
 from authentication.permissions import PermissionDenied
 from companies.api import clients_router, router as companies_router
+from camps.api import camps_router, rooms_router
 from garments.api import router as garments_router
 from orders.api import router as orders_router
+from orders.delivery_api import router as delivery_router
 from orders.report_api import router as reports_router
 from workers.api import router as workers_router
 
@@ -50,5 +52,8 @@ api.add_router('/clients/', clients_router, tags=['Clientes'])
 api.add_router('/companies/', companies_router, tags=['Empresas'])
 api.add_router('/workers/', workers_router, tags=['Trabajadores'])
 api.add_router('/garments/', garments_router, tags=['Prendas'])
+api.add_router('/camps/', camps_router, tags=['Campamentos'])
+api.add_router('/rooms/', rooms_router, tags=['Habitaciones'])
 api.add_router('/orders/', orders_router, tags=['Guías'])
+api.add_router('/delivery/', delivery_router, tags=['Entrega en habitación'])
 api.add_router('/reports/', reports_router, tags=['Reportes'])
