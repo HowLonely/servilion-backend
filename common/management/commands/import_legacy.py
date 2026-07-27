@@ -46,6 +46,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from companies.models import Client, Company
+from camps.models import Camp, Room
 from garments.models import GarmentType
 from orders.models import LaundryOrder, OrderItem, OrderStatus, OrderStatusHistory
 from workers.models import Worker
@@ -122,6 +123,48 @@ def to_int(value) -> int:
         return 0
 
 
+class RoomResolver:
+    """Resuelve los `patio`/`pieza` del legado a `camps.Room`.
+
+    El maestro legado trae ~280.000 filas con el campamento y la pieza escritos
+    a mano, así que se cachea todo en memoria: sin esto serían dos consultas por
+    trabajador importado.
+    """
+
+    def __init__(self):
+        self._client_by_company: dict[int, int] = {}
+        self._camps: dict[tuple[int, str], int] = {}
+        self._rooms: dict[tuple[int, str], int] = {}
+
+    def _client_id(self, company_id: int) -> int:
+        if company_id not in self._client_by_company:
+            self._client_by_company[company_id] = Company.objects.values_list(
+                "client_id", flat=True
+            ).get(pk=company_id)
+        return self._client_by_company[company_id]
+
+    def resolve(self, company_id: int, camp: str, room: str) -> int | None:
+        camp, room = (camp or "").strip(), (room or "").strip()
+        # Sin campamento no hay puerta que identificar: el trabajador queda sin
+        # habitación hasta que alguien la registre en el panel.
+        if not camp or not room:
+            return None
+
+        client_id = self._client_id(company_id)
+        camp_key = (client_id, camp)
+        if camp_key not in self._camps:
+            camp_obj, _ = Camp.objects.get_or_create(client_id=client_id, name=camp)
+            self._camps[camp_key] = camp_obj.id
+
+        room_key = (self._camps[camp_key], room)
+        if room_key not in self._rooms:
+            room_obj, _ = Room.objects.get_or_create(
+                camp_id=self._camps[camp_key], number=room
+            )
+            self._rooms[room_key] = room_obj.id
+        return self._rooms[room_key]
+
+
 def read_jsonl(path: Path):
     with path.open(encoding="utf-8") as fh:
         for line in fh:
@@ -150,6 +193,7 @@ class Command(BaseCommand):
         self.batch_size = opts["batch_size"]
         self.limit = opts["limit"]
         self.with_history = opts["with_history"]
+        self.rooms = RoomResolver()
 
         orders_file = base / "orders.jsonl"
         self._load_companies(base / "companies.jsonl", orders_file, base / "workers.jsonl")
@@ -290,8 +334,9 @@ class Command(BaseCommand):
                 "badge_code": badge,
                 "full_name": name or badge,
                 "national_id": truncate(row.get("rut"), 15),
-                "camp": truncate(row.get("patio"), 30),
-                "room": truncate(row.get("pieza"), 20),
+                "current_room_id": self.rooms.resolve(
+                    company_id, truncate(row.get("patio"), 100), truncate(row.get("pieza"), 20)
+                ),
                 "shift": truncate(row.get("turno"), 10),
                 "position": truncate(row.get("cargo"), 50),
                 "area": truncate(row.get("area"), 50),
@@ -460,8 +505,9 @@ class Command(BaseCommand):
             badge_code=badge or "S/C",
             full_name=truncate(row.get("nombre"), 100) or (badge or "S/C"),
             national_id=truncate(row.get("rut"), 15),
-            camp=truncate(row.get("patio"), 30),
-            room=truncate(row.get("pieza"), 20),
+            current_room_id=self.rooms.resolve(
+                company_id, truncate(row.get("patio"), 100), truncate(row.get("pieza"), 20)
+            ),
             shift=truncate(row.get("turno"), 10),
             position=truncate(row.get("cargo"), 50),
         )

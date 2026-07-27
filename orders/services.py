@@ -1,5 +1,7 @@
 import re
 from datetime import datetime, timedelta
+from decimal import Decimal
+from uuid import UUID
 
 from django.db import transaction
 from django.db.models import Count, Q, QuerySet
@@ -9,6 +11,9 @@ from authentication.models import User
 from authentication.permissions import PermissionDenied, user_has_role
 from common.services import build_presigned_upload
 from companies.models import Company
+from companies.services import get_client_price_map
+from camps import services as camps_services
+from camps.models import Room
 from orders.models import (
     LaundryOrder,
     MissingItemResolution,
@@ -37,11 +42,12 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 }
 
 # Quién puede llevar la guía a cada estado manual. Refleja la separación de
-# funciones de la operación real: despacho registra la entrega. ADMIN
-# atraviesa todo (ver `user_has_role`). Los estados no listados los puede
-# mover cualquier staff autenticado.
+# funciones de la operación real: quien digitaliza no factura, y el supervisor
+# no toca el dinero. ADMIN atraviesa todo (ver `user_has_role`). Los estados no
+# listados los puede mover cualquier staff autenticado.
 STATUS_REQUIRED_ROLES: dict[str, tuple[str, ...]] = {
-    OrderStatus.DELIVERED: (User.Role.DESPACHO, User.Role.SUPERVISOR),
+    OrderStatus.DELIVERED: (User.Role.SUPERVISOR,),
+    OrderStatus.BILLED: (User.Role.ADMIN,),
 }
 
 # Campo de timestamp que se completa automáticamente al entrar a cada estado.
@@ -164,6 +170,10 @@ def create_order(payload: LaundryOrderIn, received_by: User) -> LaundryOrder:
         observations=payload.observations,
         reference=payload.reference or generate_reference(worker.company, laundry_received_at),
         control_code=payload.control_code,
+        # Congela el destino de la entrega: `worker.current_room` puede
+        # cambiar mientras la ropa está en planta, pero este morral se entrega
+        # donde vivía el trabajador cuando la entregó sucia.
+        delivery_room_id=payload.delivery_room_id or worker.current_room_id,
         received_by=received_by,
     )
     order.garment_count = _build_items(order, payload.items)
@@ -204,9 +214,9 @@ def list_orders(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
 ) -> QuerySet[LaundryOrder]:
-    queryset = LaundryOrder.objects.select_related('worker', 'company', 'company__client').prefetch_related(
-        'items__garment_type'
-    )
+    queryset = LaundryOrder.objects.select_related(
+        'worker', 'company', 'company__client', 'delivery_room', 'delivery_room__camp'
+    ).prefetch_related('items__garment_type')
     if status:
         queryset = queryset.filter(status=status)
     if company_id is not None:
@@ -234,7 +244,8 @@ def list_orders(
 
 def get_order(order_id: int) -> LaundryOrder:
     return LaundryOrder.objects.select_related(
-        'worker', 'worker__company', 'company', 'company__client', 'received_by', 'reviewed_by'
+        'worker', 'worker__company', 'company', 'company__client', 'received_by', 'reviewed_by',
+        'delivery_room', 'delivery_room__camp',
     ).prefetch_related('items__garment_type').get(pk=order_id)
 
 
@@ -252,7 +263,9 @@ def find_order_by_code(code: str) -> LaundryOrder:
     """
     code = code.strip()
     order = (
-        LaundryOrder.objects.select_related('worker', 'company', 'company__client')
+        LaundryOrder.objects.select_related(
+            'worker', 'company', 'company__client', 'delivery_room', 'delivery_room__camp'
+        )
         .prefetch_related('items__garment_type')
         .filter(Q(order_number=code) | Q(reference=code) | Q(control_code=code))
         .order_by('-received_at')
@@ -610,8 +623,11 @@ def build_receipt(order_id: int) -> dict:
         'company_name': order.company.name,
         'worker_name': worker.full_name,
         'national_id': worker.national_id,
-        'camp': worker.camp,
-        'room': worker.room,
+        # La boleta muestra el destino DE ESTA GUÍA, no dónde vive hoy el
+        # trabajador: si se mudó mientras su ropa estaba en planta, el morral
+        # igual se entrega donde correspondía al recibirlo.
+        'camp': order.delivery_room.camp.name if order.delivery_room_id else '',
+        'room': order.delivery_room.number if order.delivery_room_id else '',
         'shift': order.shift or worker.shift,
         'weight_kg': float(order.weight_kg) if order.weight_kg is not None else None,
         'garment_count': order.garment_count,
@@ -724,3 +740,86 @@ def resolve_sync_conflict(conflict_id: int, user: User, note: str = '') -> SyncC
     conflict.resolution_note = note
     conflict.save(update_fields=['resolved_at', 'resolved_by', 'resolution_note'])
     return conflict
+
+
+# --- Paso 9 (app móvil): entrega en habitación por doble escaneo QR ---
+
+
+class DeliveryRoomMismatch(Exception):
+    """El QR de la puerta escaneada no es el destino registrado en la guía.
+
+    Lleva ambas habitaciones para que la app pueda mostrar "esperaba A, leíste
+    B" y ofrecer confirmar la entrega en la pieza real.
+    """
+
+    def __init__(self, message: str, scanned: Room, expected: Room | None):
+        super().__init__(message)
+        self.scanned = scanned
+        self.expected = expected
+
+
+@transaction.atomic
+def confirm_delivery_by_scan(
+    order_code: str,
+    room_qr: UUID,
+    user: User,
+    note: str = '',
+    delivered_at: datetime | None = None,
+    confirm_different_room: bool = False,
+) -> dict:
+    """Registra la entrega del morral validando el QR de la puerta.
+
+    Es el flujo de la app móvil: se escanea la etiqueta de la OT y luego el QR
+    de la habitación. Reutiliza `register_delivery` para no duplicar las reglas
+    del flujo (Flujo 2, recepción previa en faena, transición de estado); lo que
+    agrega es la verificación de que el morral se dejó donde correspondía.
+
+    Ante una discrepancia lanza `DeliveryRoomMismatch` en vez de entregar a
+    ciegas: en faena las piezas se reasignan seguido y dejar la ropa en la
+    puerta equivocada es justamente lo que este doble escaneo viene a evitar.
+    Si el operador confirma que la pieza real es otra, se registra la entrega
+    ahí y la discrepancia queda escrita en la nota del pistoleo.
+    """
+    order = find_order_by_code(order_code)
+    room = camps_services.get_room_by_qr(room_qr)
+    expected = order.delivery_room
+
+    room_matched = expected is not None and expected.id == room.id
+    if not room_matched and not confirm_different_room:
+        detail = (
+            f'La guía se debía entregar en {expected.camp.name} · {expected.number}, '
+            f'pero se escaneó {room.camp.name} · {room.number}.'
+            if expected is not None
+            else 'La guía no tiene habitación de entrega registrada; confirma la pieza escaneada.'
+        )
+        raise DeliveryRoomMismatch(detail, scanned=room, expected=expected)
+
+    full_note = note
+    if not room_matched:
+        discrepancy = (
+            f'Entregada en {room.camp.name} · {room.number} '
+            f'(destino registrado: '
+            f'{f"{expected.camp.name} · {expected.number}" if expected else "sin registrar"}).'
+        )
+        full_note = f'{note} {discrepancy}'.strip()[:255]
+
+    updated = register_delivery(order.id, user=user, note=full_note, delivered_at=delivered_at)
+
+    # `register_delivery` ya creó el pistoleo de ENTREGA; se le adjunta la
+    # habitación escaneada, que es la evidencia de dónde quedó el morral.
+    scan = (
+        SiteScan.objects.filter(order_id=order.id, kind=SiteScan.Kind.DELIVERY)
+        .order_by('-scanned_at')
+        .first()
+    )
+    if scan is not None and scan.room_id is None:
+        scan.room = room
+        scan.save(update_fields=['room'])
+
+    return {
+        'order': updated,
+        'scanned_room': room,
+        'expected_room': expected,
+        'room_matched': room_matched,
+        'delivered_at': updated.delivered_at,
+    }

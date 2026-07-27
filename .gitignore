@@ -51,3 +51,6 @@ staticfiles/
 # --- Docker ---
 # Excluimos volúmenes persistentes si los llegaras a crear en la raíz
 docker-data/
+
+# Archivos Temporales
+/temp/

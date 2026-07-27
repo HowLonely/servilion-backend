@@ -135,7 +135,7 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 | `is_staff` | BooleanField | — | NO | false | — | Puede entrar al Django Admin |
 | `is_active` | BooleanField | — | NO | true | — | Cuenta activa |
 | `date_joined` | DateTimeField | — | NO | now | — | Alta en el sistema |
-| `role` | CharField | 20 | NO | `RECEPCION` | — | Rol operativo (ver enum §5.1) |
+| `role` | CharField | 20 | NO | `DIGITADOR_OT` | — | Rol operativo (ver enum §5.1) |
 | `phone` | CharField | 20 | NO | '' | — | Teléfono de contacto |
 
 **Relaciones M2M (tablas puente Django):**
@@ -187,8 +187,7 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 | `badge_code` | CharField | 20 | NO | — | **UK compuesto** | Código/credencial de faena |
 | `full_name` | CharField | 100 | NO | — | — | Nombre completo |
 | `national_id` | CharField | 15 | NO | '' | **Idx** | RUT |
-| `camp` | CharField | 30 | NO | '' | — | Campamento/patio (módulo de alojamiento) |
-| `room` | CharField | 20 | NO | '' | — | Pieza/número de habitación |
+| `current_room_id` | ForeignKey → `camps_room` | — | SÍ | NULL | FK | Pieza donde vive HOY. `SET_NULL`. Reemplaza a los antiguos `camp`/`room` de texto libre (migración `workers.0002`) |
 | `shift` | CharField | 10 | NO | '' | — | Turno de rotación (10x10, 7x7, 4x4…) |
 | `position` | CharField | 50 | NO | '' | — | Cargo |
 | `area` | CharField | 50 | NO | '' | — | Área/sector |
@@ -205,6 +204,41 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 **On delete:** `PROTECT` (desde LaundryOrder)
 
 **Clave natural (import legado):** par (`company`, `badge_code`)
+
+---
+
+### 4.3b `camps_camp`
+
+**Modelo Django:** `camps.Camp`
+**Descripción:** Campamento/patio de la faena donde se aloja el personal. Cuelga de `Client` y no de `Company`: varias contratistas del mismo cliente alojan gente en el mismo campamento.
+
+| Campo | Tipo | Max | Null | Default | UK/Idx | Descripción |
+|---|---|---|---|---|---|---|
+| `id` | BigAutoField | — | NO | auto | PK | |
+| `client_id` | ForeignKey → `companies_client` | — | NO | — | FK, **UK compuesto** | `CASCADE` |
+| `name` | CharField | 100 | NO | — | **UK compuesto** | Nombre del campamento |
+| `is_active` | BooleanField | — | NO | true | **Idx compuesto** | Soft-delete lógico |
+
+**Constraints:** `unique_camp_per_client` → UNIQUE (`client_id`, `name`)
+
+---
+
+### 4.3c `camps_room`
+
+**Modelo Django:** `camps.Room`
+**Descripción:** Pieza de un campamento. Es el destino físico de la entrega y el objeto que la app móvil identifica al escanear el QR de la puerta.
+
+| Campo | Tipo | Max | Null | Default | UK/Idx | Descripción |
+|---|---|---|---|---|---|---|
+| `id` | BigAutoField | — | NO | auto | PK | |
+| `camp_id` | ForeignKey → `camps_camp` | — | NO | — | FK, **UK compuesto** | `CASCADE` |
+| `number` | CharField | 20 | NO | — | **UK compuesto** | Número de pieza |
+| `qr_code` | UUIDField | — | NO | `uuid4` | **UK** | Código pegado en la puerta. No editable: ya está impreso |
+| `is_active` | BooleanField | — | NO | true | **Idx compuesto** | Soft-delete lógico |
+
+**Constraints:** `unique_room_per_camp` → UNIQUE (`camp_id`, `number`)
+
+**Por qué el QR es UUID y no el número de pieza:** el número se repite entre campamentos y puede reasignarse; el UUID identifica la puerta de forma única y estable.
 
 ---
 
@@ -245,6 +279,7 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 | `ticket_number` | CharField | 20 | NO | '' | — | N° ticket/boleta auxiliar |
 | `worker_id` | ForeignKey → `workers_worker` | — | NO | — | FK | Trabajador que entrega la ropa |
 | `company_id` | ForeignKey → `companies_company` | — | NO | — | FK, **Idx compuesto** | Empresa (denormalizada desde worker; facturación) |
+| `delivery_room_id` | ForeignKey → `camps_room` | — | SÍ | NULL | FK | Destino de ESTA entrega, congelado al digitalizar desde `worker.current_room`. `SET_NULL`. Si el trabajador se muda mientras la ropa está en planta, el morral igual va donde correspondía |
 | `shift` | CharField | 10 | NO | '' | — | Turno al momento de la guía |
 | `status` | CharField | 15 | NO | `RECIBIDA` | **Idx**, **Idx compuesto** | Estado del flujo (enum §5.3) |
 | `garment_count` | PositiveIntegerField | — | NO | 0 | — | Total de prendas (suma de items) |
@@ -336,12 +371,15 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 
 | Valor DB | Etiqueta | Uso típico |
 |---|---|---|
-| `ADMIN` | Administrador | Configuración total |
-| `RECEPCION` | Recepción | Crear guías, registrar prendas |
-| `LAVANDERIA` | Lavandería | Mover estados de lavado |
-| `DESPACHO` | Despacho | Despacho y entrega |
-| `SUPERVISOR` | Supervisor | Supervisión operativa |
-| `RECEPCION` | *(default)* | Valor por defecto al crear usuario |
+| `ADMIN` | Administrador | Acceso total, incluida la administración del catálogo y la facturación |
+| `SUPERVISOR` | Supervisor | Toda la operación (digitalizar, empacar, hitos en faena y reportería), pero **no** clientes, empresas, trabajadores, prendas, facturación ni conflictos de sincronización |
+| `DIGITADOR_OT` | Digitador de OT | Solo digitaliza la OT física (`POST /api/orders/`) |
+| `DIGITADOR_EMPAQUE` | Digitador de Empaque | Solo valida el morral limpio (pistoleo, cierre de empaque y resolución de faltantes) |
+| `DIGITADOR_OT` | *(default)* | Valor por defecto al crear usuario |
+
+> Migración `authentication.0002_restructure_roles`: los roles anteriores se
+> remapearon como `RECEPCION → DIGITADOR_OT` y `LAVANDERIA`/`DESPACHO →
+> DIGITADOR_EMPAQUE`.
 
 ---
 

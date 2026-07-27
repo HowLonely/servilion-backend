@@ -6,7 +6,7 @@ from ninja.pagination import paginate
 
 from authentication.auth import JWTAuth
 from authentication.models import User
-from authentication.permissions import require_roles
+from authentication.permissions import require_admin, require_roles
 from common.schemas import MessageOut
 from orders import services
 from orders.schemas import (
@@ -64,7 +64,7 @@ def list_orders(
 
 
 @router.post('/', response={201: LaundryOrderOut})
-@require_roles(User.Role.RECEPCION, User.Role.SUPERVISOR)
+@require_roles(User.Role.DIGITADOR_OT, User.Role.SUPERVISOR)
 def create_order(request, payload: LaundryOrderIn):
     """Digitalización de la OT física al llegar el morral a Antofagasta (paso 4)."""
     order = services.create_order(payload, received_by=request.auth)
@@ -72,7 +72,7 @@ def create_order(request, payload: LaundryOrderIn):
 
 
 @router.post('/scan/site-reception', response={201: SiteScanOut})
-@require_roles(User.Role.SUPERVISOR, User.Role.RECEPCION)
+@require_roles(User.Role.SUPERVISOR)
 def register_site_reception(request, payload: SiteScanIn):
     """Pistoleo del morral sucio en faena (paso 2), previo a la digitalización."""
     scan = services.register_site_reception(
@@ -94,15 +94,15 @@ def get_counters(request, date_from: datetime | None = None, date_to: datetime |
 
 
 @router.get('/sync-conflicts', response=List[SyncConflictOut])
-@require_roles(User.Role.SUPERVISOR)
+@require_admin()
 @paginate
 def list_sync_conflicts(request, resolved: bool | None = None):
-    """Cambios de la app móvil descartados por antigüedad, para revisión del supervisor."""
+    """Cambios de la app móvil descartados por antigüedad, para revisión del administrador."""
     return services.list_sync_conflicts(resolved=resolved)
 
 
 @router.post('/sync-conflicts/{conflict_id}/resolve', response=SyncConflictOut)
-@require_roles(User.Role.SUPERVISOR)
+@require_admin()
 def resolve_sync_conflict(request, conflict_id: int, payload: NoteIn):
     return services.resolve_sync_conflict(conflict_id, user=request.auth, note=payload.note)
 
@@ -155,7 +155,7 @@ def get_packing_progress(request, order_id: int):
 
 
 @router.post('/{order_id}/packing/scan', response={200: PackingProgressOut, 400: MessageOut})
-@require_roles(User.Role.LAVANDERIA, User.Role.DESPACHO)
+@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
 def scan_packed_garment(request, order_id: int, payload: PackingScanIn):
     """Suma una prenda pistoleada al morral limpio durante el empaque (paso 6)."""
     try:
@@ -165,7 +165,7 @@ def scan_packed_garment(request, order_id: int, payload: PackingScanIn):
 
 
 @router.post('/{order_id}/packing/finish', response={200: LaundryOrderOut, 400: MessageOut})
-@require_roles(User.Role.LAVANDERIA, User.Role.DESPACHO)
+@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
 def finish_packing(request, order_id: int, payload: NoteIn):
     """Cierra el empaque: completa la guía o la marca incompleta según el pistoleo."""
     try:
@@ -176,7 +176,7 @@ def finish_packing(request, order_id: int, payload: NoteIn):
 
 
 @router.post('/{order_id}/incomplete/resolve', response={200: LaundryOrderOut, 400: MessageOut})
-@require_roles(User.Role.LAVANDERIA, User.Role.DESPACHO)
+@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
 def resolve_missing_item(request, order_id: int, payload: ResolveMissingItemIn):
     """Resuelve una prenda faltante de una guía Incompleta: encontrada (pistoleo) o comprada (costo)."""
     try:
@@ -199,7 +199,7 @@ def confirm_clean_reception(request, order_id: int, payload: NoteIn):
 
 
 @router.post('/{order_id}/deliver', response={200: LaundryOrderOut, 400: MessageOut})
-@require_roles(User.Role.SUPERVISOR, User.Role.DESPACHO)
+@require_roles(User.Role.SUPERVISOR)
 def register_delivery(request, order_id: int, payload: NoteIn):
     """Entrega del morral al trabajador en su habitación (paso 9, Flujo 1)."""
     try:
