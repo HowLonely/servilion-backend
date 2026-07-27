@@ -11,7 +11,7 @@ from django.utils import timezone
 from ninja import Schema
 
 from orders.models import MissingItemResolution
-from orders.report_services import STALL_THRESHOLDS_H, STALL_TIMESTAMP
+from orders.report_services import STALL_THRESHOLDS_H
 
 
 # --- Dashboard 1: Torre de Control Operacional -----------------------------
@@ -21,23 +21,46 @@ class StatusCount(Schema):
     count: int
 
 
+class AgingBucket(Schema):
+    label: str          # "0-1d", "1-2d", ... "7d+"
+    count: int
+
+
 class OperationsSummaryOut(Schema):
     generated_at: datetime
-    wip_total: int
-    by_status: list[StatusCount]
-    stalled_count: int
-    at_risk_count: int
-    avg_wip_age_days: float
-    received_today: int
-    delivered_today: int
+    period_days: int                      # largo de la ventana de flujo usada
+
+    # Flujo del período (por received_at / completed_at)
+    received: int                         # guías ingresadas en la ventana
+    produced: int                         # guías producidas (completadas) en la ventana
+    received_delta_pct: float | None      # Δ% vs período anterior comparable
+    produced_delta_pct: float | None
+    incomplete: int                       # incidencias surgidas en la ventana
+    incomplete_rate: float                # incomplete / received
+
+    # Turnaround recepción -> producción (guías producidas en la ventana)
+    tat_p50_days: float
+    tat_p90_days: float
+    tat_target_days: int
+    tat_on_target_pct: float              # % producidas dentro de la meta
+
+    # Foto de planta AHORA (snapshot, sin ventana de fecha)
+    in_plant: int                         # WIP activo (RECIBIDA + EN_REVISION + INCOMPLETA)
+    in_plant_by_status: list[StatusCount]
+    open_incomplete: int                  # guías en estado INCOMPLETA ahora
+    stalled_count: int                    # WIP sobre su umbral de tiempo en estado
+    oldest_in_plant_days: float           # antigüedad de la guía más vieja en planta
+    aging: list[AgingBucket]              # WIP repartido por tramos de antigüedad
+    by_status: list[StatusCount]          # distribución completa por estado (contexto)
 
 
 class StalledOrderOut(Schema):
     """Una guía que lleva demasiado tiempo en su estado actual.
 
-    `since`, `age_hours` y `threshold_hours` dependen del estado, así que se
-    resuelven por fila leyendo el timestamp de entrada que le corresponde
-    (STALL_TIMESTAMP). El servicio ya hizo `select_related('company', 'worker')`.
+    `since` viene anotado por el servicio (`state_since`: timestamp de entrada al
+    estado con fallback a `received_at`). `age_hours` se deriva de él y
+    `threshold_hours` sale del umbral del estado. El servicio ya hizo
+    `select_related('company', 'worker')`.
     """
 
     id: int
@@ -49,7 +72,6 @@ class StalledOrderOut(Schema):
     since: datetime | None
     age_hours: float
     threshold_hours: int
-    promised_at: datetime | None
 
     @staticmethod
     def resolve_company_name(obj) -> str:
@@ -61,11 +83,11 @@ class StalledOrderOut(Schema):
 
     @staticmethod
     def resolve_since(obj) -> datetime | None:
-        return getattr(obj, STALL_TIMESTAMP[obj.status], None)
+        return getattr(obj, 'state_since', None)
 
     @staticmethod
     def resolve_age_hours(obj) -> float:
-        since = getattr(obj, STALL_TIMESTAMP[obj.status], None)
+        since = getattr(obj, 'state_since', None)
         if since is None:
             return 0.0
         return round((timezone.now() - since).total_seconds() / 3600, 1)
@@ -77,8 +99,9 @@ class StalledOrderOut(Schema):
 
 class TimeseriesPoint(Schema):
     date: str          # YYYY-MM-DD (inicio del bucket)
-    received: int
-    delivered: int
+    received: int      # ingresadas
+    produced: int      # producidas (completadas): tasa real de salida de planta
+    delivered: int     # entregadas (hoy casi siempre 0: no se registra aún)
 
 
 class TimeseriesOut(Schema):

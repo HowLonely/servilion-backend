@@ -32,22 +32,13 @@ from workers.models import Worker
 # COMPLETADA no aparecen aquí a propósito: el sistema las decide solo, como
 # efecto de digitalizar la guía (`create_order`), de pistolear el empaque
 # (`scan_packed_garment` / `finish_packing`) y de resolver una prenda faltante
-# (`resolve_missing_item`) — ver `_advance_status`. Solo queda manual el cobro,
-# que es un acto administrativo sin ningún escaneo detrás.
+# (`resolve_missing_item`) — ver `_advance_status`.
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     OrderStatus.RECEIVED: set(),
     OrderStatus.QUALITY_CHECK: set(),
     OrderStatus.INCOMPLETE: set(),
     OrderStatus.COMPLETED: {OrderStatus.DELIVERED},
-    OrderStatus.DELIVERED: {OrderStatus.BILLED},
-    OrderStatus.BILLED: set(),
-}
-
-# En el Flujo 2 (entrega solo al cliente) no hay entrega individual al
-# trabajador, así que la guía se cobra directo desde completada
-# (FLUJO_NEGOCIO.md §2).
-FLOW_2_EXTRA_TRANSITIONS: dict[str, set[str]] = {
-    OrderStatus.COMPLETED: {OrderStatus.BILLED},
+    OrderStatus.DELIVERED: set(),
 }
 
 # Quién puede llevar la guía a cada estado manual. Refleja la separación de
@@ -64,7 +55,6 @@ STATUS_TIMESTAMP_FIELD: dict[str, str] = {
     OrderStatus.INCOMPLETE: 'incomplete_at',
     OrderStatus.COMPLETED: 'completed_at',
     OrderStatus.DELIVERED: 'delivered_at',
-    OrderStatus.BILLED: 'billed_at',
 }
 
 # Días de proceso en planta antes de que el morral esté listo para entregar.
@@ -141,23 +131,6 @@ def _build_items(order: LaundryOrder, items: list[OrderItemIn]) -> int:
         for item in items
     )
     return sum(item.quantity for item in items)
-
-
-def compute_billed_amount(order: LaundryOrder) -> Decimal:
-    """Monto a cobrar de la guía según el catálogo de precios de su cliente.
-
-    Se congela al pasar la guía a COBRADA (ver `_advance_status`): leemos el
-    precio vigente de cada prenda del catálogo del cliente y sumamos
-    `cantidad × precio`. Las prendas fuera de catálogo (sin `garment_type`) o sin
-    precio definido cuentan 0: no tienen precio de lista y se ajustan a mano.
-    """
-    price_map = get_client_price_map(order.company.client_id)
-    total = Decimal('0')
-    for item in order.items.all():
-        price = price_map.get(item.garment_type_id) if item.garment_type_id else None
-        if price is not None:
-            total += item.quantity * price
-    return total
 
 
 # El digitador ya usa "0" (o variantes) como convención de facto para "el
@@ -308,10 +281,7 @@ def get_status_history(order_id: int) -> QuerySet[OrderStatusHistory]:
 
 
 def allowed_transitions(order: LaundryOrder) -> set[str]:
-    allowed = set(ALLOWED_TRANSITIONS.get(order.status, set()))
-    if order.company.delivery_flow == Company.DeliveryFlow.CLIENT_ONLY:
-        allowed |= FLOW_2_EXTRA_TRANSITIONS.get(order.status, set())
-    return allowed
+    return set(ALLOWED_TRANSITIONS.get(order.status, set()))
 
 
 def _advance_status(order: LaundryOrder, new_status: str, user: User, note: str = '') -> None:
@@ -337,10 +307,6 @@ def _advance_status(order: LaundryOrder, new_status: str, user: User, note: str 
     if new_status == OrderStatus.DELIVERED:
         order.delivered_by = user
         update_fields.append('delivered_by')
-    if new_status == OrderStatus.BILLED:
-        # Congela el monto según el catálogo del cliente en este momento.
-        order.billed_amount = compute_billed_amount(order)
-        update_fields.append('billed_amount')
 
     order.save(update_fields=update_fields)
     OrderStatusHistory.objects.create(
@@ -614,8 +580,8 @@ def get_site_counters(date_from: datetime | None = None, date_to: datetime | Non
     """Contadores ENTREGADOS / DESPACHADOS de la pantalla de faena (FLUJO_NEGOCIO.md §4, paso 2).
 
     Ya no existe un estado ni un timestamp propio de "despachada" (ver
-    `OrderStatus`): "enviada" queda representada por COMPLETADA/ENTREGADA/COBRADA
-    (ya salió de empaque), y "pendiente de entrega" por COMPLETADA a secas
+    `OrderStatus`): "enviada" queda representada por COMPLETADA/ENTREGADA (ya
+    salió de empaque), y "pendiente de entrega" por COMPLETADA a secas
     (enviada pero sin registrar aún su entrega en habitación).
     """
     queryset = LaundryOrder.objects.all()
@@ -626,7 +592,7 @@ def get_site_counters(date_from: datetime | None = None, date_to: datetime | Non
 
     counters = queryset.aggregate(
         dispatched=Count(
-            'id', filter=Q(status__in=[OrderStatus.COMPLETED, OrderStatus.DELIVERED, OrderStatus.BILLED])
+            'id', filter=Q(status__in=[OrderStatus.COMPLETED, OrderStatus.DELIVERED])
         ),
         delivered=Count('id', filter=Q(delivered_at__isnull=False)),
         clean_received_at_site=Count(

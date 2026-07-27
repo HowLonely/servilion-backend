@@ -26,11 +26,10 @@ class OrderStatus(models.TextChoices):
     # "salió de planta", así que el concepto queda absorbido por COMPLETADA. El
     # próximo hito con evidencia real es la recepción en faena (ver SiteScan).
     DELIVERED = 'ENTREGADA', 'Entregada'
-    BILLED = 'COBRADA', 'Cobrada'
 
 
 class LaundryOrder(TimeStampedModel):
-    """Guía de lavandería: unidad de trabajo entre la recepción de ropa sucia y su entrega/cobro.
+    """Guía de lavandería: unidad de trabajo entre la recepción de ropa sucia y su entrega.
 
     `client_uuid` es la clave de idempotencia para la sincronización offline-first
     de la app móvil: se genera en el dispositivo antes de tener conectividad y
@@ -63,11 +62,6 @@ class LaundryOrder(TimeStampedModel):
     status = models.CharField(max_length=15, choices=OrderStatus.choices, default=OrderStatus.RECEIVED, db_index=True)
     garment_count = models.PositiveIntegerField(default=0)
     weight_kg = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
-    # Monto cobrado, congelado al pasar la guía a COBRADA: se calcula leyendo el
-    # catálogo de precios del cliente (companies.ClientGarmentPrice) en ese
-    # momento. Cambiar el catálogo después NO altera este valor. Null mientras la
-    # guía no se ha cobrado.
-    billed_amount = models.DecimalField('Monto cobrado', max_digits=12, decimal_places=2, null=True, blank=True)
 
     # Hitos del flujo real (FLUJO_NEGOCIO.md §4). `site_received_at` y
     # `laundry_received_at` son los `recepcion` / `rlavanderia` del sistema
@@ -83,7 +77,6 @@ class LaundryOrder(TimeStampedModel):
     incomplete_at = models.DateTimeField('Guía marcada incompleta al empacar', null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
-    billed_at = models.DateTimeField(null=True, blank=True)
 
     observations = models.TextField(blank=True)
     # `reference` (ref) y `control_code` se pistolean tanto como el n° de OT,

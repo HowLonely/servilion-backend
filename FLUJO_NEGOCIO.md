@@ -122,7 +122,7 @@ flowchart TD
     F --> G["7. Despacho + traslado a faena"]
     G --> H["8. Recepción morral limpio en faena\n(supervisor verifica)"]
     H --> I["9. Entrega en habitación\n(app Android — 2 QR, offline)"]
-    I --> J["10. Cobro a empresa contratista"]
+    I --> J["10. Cobro a empresa contratista\n(fuera del sistema por ahora)"]
 ```
 
 ### Paso 1 — Entrega del trabajador en faena
@@ -232,9 +232,9 @@ Aquí entra la **app Android** de reparto:
 4. Se actualiza `entregado` — la **fecha real de entrega**, distinta de `entrega` (fecha tentativa según turno impresa en la boleta).
 5. El contador **ENTREGADOS** de la app se incrementa.
 
-### Paso 10 — Cobro
+### Paso 10 — Cobro (fuera de alcance del sistema)
 
-La guía se factura a la empresa contratista. Estado: `COBRADA`. El reporte de facturación (`generate_billing_report_task`) agrega guías cobradas por empresa y rango de fechas.
+La guía se factura a la empresa contratista, pero esto ocurre fuera del sistema: no existe un estado `COBRADA` ni un reporte de facturación — se retiraron del flujo (ver §6 y §9). `ENTREGADA` (Flujo 1) y `COMPLETADA` (Flujo 2) son los estados terminales de la guía.
 
 ---
 
@@ -263,12 +263,13 @@ Los estados del backend deben alinearse con el flujo real. Mapeo propuesto respe
 | `INCOMPLETA` | Discrepancia en conteo (observación registrada) |
 | `COMPLETADA` | Morral empaquetado y validado por pistoleo (paso 6) |
 | `DESPACHADA` | Morral en tránsito o recibido en faena (pasos 7–8) |
-| `ENTREGADA` | Entrega confirmada en habitación vía app (paso 9) |
-| `COBRADA` | Facturada a la empresa (paso 10) |
+| `ENTREGADA` | Entrega confirmada en habitación vía app (paso 9) — estado terminal en Flujo 1 |
 
 Cada cambio de estado queda auditado en `OrderStatusHistory`. El sistema legado solo guardaba el estado final.
 
 > **Nota:** Los timestamps `recepcion` (faena, paso 2) y `rlavanderia` (Antofagasta, paso 4) son eventos **anteriores** al estado `RECIBIDA` del backend actual. Conviene modelarlos como timestamps independientes, no como estados.
+
+> **Nota:** esta tabla es el mapeo *propuesto* original y ya quedó desalineada del enum real — `EN_LAVADO` y `DESPACHADA` nunca se implementaron como estados propios (ver comentarios en `orders/models.py::OrderStatus`), y `COBRADA` se implementó pero se retiró del flujo (el cobro pasó a ser un proceso fuera del sistema). El enum vigente es `RECIBIDA`, `EN_REVISION`, `INCOMPLETA`, `COMPLETADA`, `ENTREGADA`.
 
 ---
 
@@ -307,7 +308,7 @@ erDiagram
 | Recepción de ropa limpia en faena | **Cerrada** | `site_clean_received_at` / `site_clean_received_by`, vía `POST /orders/{id}/clean-reception`. Es requisito previo para registrar la entrega. |
 | `entrega` vs. `entregado` | **Cerrada** | `promised_at` se calcula según el turno del trabajador al digitalizar; `delivered_at` se fija al registrar la entrega. |
 | App PEÑON (faena) vs. app Android (entrega) | **Parcial** | El backend recibe ambos flujos (`POST /orders/scan/site-reception` y `POST /orders/sync`) y expone los contadores en `GET /orders/counters`. Las apps móviles siguen pendientes. |
-| Flujo 2 (sin seguimiento de entrega) | **Cerrada** | `Company.delivery_flow`; en FLUJO_2 la guía va de `DESPACHADA` a `COBRADA` y el endpoint de entrega la rechaza. |
+| Flujo 2 (sin seguimiento de entrega) | **Cerrada** | `Company.delivery_flow`; en FLUJO_2 la guía llega a `COMPLETADA` y ahí queda (estado terminal), y el endpoint de entrega la rechaza. |
 | `ref` con reset semanal | **Cerrada** | `ReferenceCounter` por (prefijo, año ISO, semana ISO), reseteo a 1000 y generación serializada. El prefijo sale de `Company.reference_prefix`. |
 | Validación por pistoleo en empaque | **Cerrada** | `OrderItem.scanned_quantity` + `POST /orders/{id}/packing/scan` y `/packing/finish`: completa la guía o la marca `INCOMPLETA` con la discrepancia. |
 | Prendas fuera de catálogo | **Cerrada** | `OrderItem.garment_type` es opcional y admite `custom_name`, como la OT física escrita a mano. |

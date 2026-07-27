@@ -116,7 +116,6 @@ class LaundryOrderOut(Schema):
     completed_at: datetime | None
     clean_receptions: list[CleanReceptionOut]
     delivered_at: datetime | None
-    billed_at: datetime | None
     observations: str
     reference: str
     control_code: str
@@ -124,7 +123,6 @@ class LaundryOrderOut(Schema):
     room_number: str
     camp_name: str
     photo_url: str | None
-    billed_amount: float | None
     items: list[OrderItemOut]
     missing_item_resolutions: list[MissingItemResolutionOut]
     updated_at: datetime
@@ -162,10 +160,6 @@ class LaundryOrderOut(Schema):
         from common.services import build_object_url
 
         return build_object_url(obj.photo_key)
-
-    @staticmethod
-    def resolve_billed_amount(obj) -> float | None:
-        return float(obj.billed_amount) if obj.billed_amount is not None else None
 
     @staticmethod
     def resolve_clean_receptions(obj):
