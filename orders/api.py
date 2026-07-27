@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import List
 
-from celery.result import AsyncResult
 from ninja import Router
 from ninja.pagination import paginate
 
@@ -11,9 +10,6 @@ from authentication.permissions import require_roles
 from common.schemas import MessageOut
 from orders import services
 from orders.schemas import (
-    BillingReportRequestIn,
-    BillingReportResultOut,
-    BillingReportTaskOut,
     LaundryOrderIn,
     LaundryOrderOut,
     NoteIn,
@@ -33,7 +29,6 @@ from orders.schemas import (
     StatusUpdateIn,
     SyncConflictOut,
 )
-from orders.tasks import generate_billing_report_task
 
 router = Router(auth=JWTAuth())
 
@@ -127,25 +122,6 @@ def sync_orders(request, payload: OrderSyncBatchIn):
             for order, result in results
         ]
     }
-
-
-@router.post('/reports/billing', response=BillingReportTaskOut)
-@require_roles(User.Role.SUPERVISOR)
-def request_billing_report(request, payload: BillingReportRequestIn):
-    task = generate_billing_report_task.delay(
-        payload.date_from.isoformat(),
-        payload.date_to.isoformat(),
-        company_id=payload.company_id,
-        client_id=payload.client_id,
-    )
-    return {'task_id': task.id}
-
-
-@router.get('/reports/billing/{task_id}', response=BillingReportResultOut)
-@require_roles(User.Role.SUPERVISOR)
-def get_billing_report(request, task_id: str):
-    result = AsyncResult(task_id)
-    return {'status': result.status, 'result': result.result if result.ready() and result.successful() else None}
 
 
 @router.get('/{order_id}', response=LaundryOrderOut)

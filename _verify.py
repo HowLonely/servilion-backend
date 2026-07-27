@@ -16,7 +16,7 @@ o = (LaundryOrder.objects.select_related("worker", "company")
 print("\nGUIA:", o.order_number, "| status", o.status, "| empresa", o.company.name,
       "| trab", o.worker.full_name)
 print("recibida:", o.received_at, "| completada:", o.completed_at,
-      "| cobrada:", o.billed_at, "| peso", o.weight_kg, "| prendas(legado)", o.garment_count)
+      "| entregada:", o.delivered_at, "| peso", o.weight_kg, "| prendas(legado)", o.garment_count)
 print("obs:", repr(o.observations))
 for it in o.items.all():
     print("   -", it.quantity, "x", it.display_name)

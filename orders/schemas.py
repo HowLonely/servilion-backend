@@ -114,12 +114,10 @@ class LaundryOrderOut(Schema):
     completed_at: datetime | None
     clean_receptions: list[CleanReceptionOut]
     delivered_at: datetime | None
-    billed_at: datetime | None
     observations: str
     reference: str
     control_code: str
     photo_url: str | None
-    billed_amount: float | None
     items: list[OrderItemOut]
     missing_item_resolutions: list[MissingItemResolutionOut]
     updated_at: datetime
@@ -149,10 +147,6 @@ class LaundryOrderOut(Schema):
         from common.services import build_object_url
 
         return build_object_url(obj.photo_key)
-
-    @staticmethod
-    def resolve_billed_amount(obj) -> float | None:
-        return float(obj.billed_amount) if obj.billed_amount is not None else None
 
     @staticmethod
     def resolve_clean_receptions(obj):
@@ -350,22 +344,3 @@ class SyncConflictOut(Schema):
     @staticmethod
     def resolve_worker_name(obj) -> str:
         return obj.order.worker.full_name
-
-
-class BillingReportRequestIn(Schema):
-    """Solicita el reporte de facturación. Indicar `client_id` (agrega todas sus
-    empresas, con desglose por empresa) o `company_id` (una sola empresa)."""
-
-    company_id: int | None = None
-    client_id: int | None = None
-    date_from: datetime
-    date_to: datetime
-
-
-class BillingReportTaskOut(Schema):
-    task_id: str
-
-
-class BillingReportResultOut(Schema):
-    status: str
-    result: dict | None = None

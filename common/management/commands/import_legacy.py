@@ -53,7 +53,6 @@ from workers.models import Worker
 # Mapa de estados legados -> nuevos. Las llaves están normalizadas (upper/trim).
 STATUS_MAP = {
     "": OrderStatus.RECEIVED,
-    "COBRADO": OrderStatus.BILLED,
     "COMPLETO": OrderStatus.COMPLETED,
     "CHECK": OrderStatus.QUALITY_CHECK,
     "CH3ECK": OrderStatus.QUALITY_CHECK,  # typo real presente en la data
@@ -62,6 +61,14 @@ STATUS_MAP = {
     "DESPACHADO": OrderStatus.COMPLETED,
     "INCOMPLETO": OrderStatus.INCOMPLETE,
 }
+
+# COBRADO también se eliminó del modelo nuevo (el cobro se retiró del flujo,
+# ver OrderStatus): una guía legado marcada COBRADO ya pasó por su último hito
+# real, así que se resuelve como si lo hubiera alcanzado sin cobrarse —
+# ENTREGADA en Flujo 1, COMPLETADA en Flujo 2 (ese cliente nunca registra
+# entrega individual). Se maneja aparte de STATUS_MAP porque depende de la
+# empresa de la fila, no solo del texto de `status`.
+LEGACY_BILLED_STATUS = "COBRADO"
 
 FALLBACK_COMPANY = "SIN EMPRESA (LEGADO)"
 
@@ -201,6 +208,7 @@ class Command(BaseCommand):
         Company.objects.bulk_create(to_create, batch_size=self.batch_size)
 
         self.company_by_norm = {norm(n): pk for pk, n in Company.objects.values_list("id", "name")}
+        self.company_delivery_flow = dict(Company.objects.values_list("id", "delivery_flow"))
         self.stdout.write(f"  empresas: {len(self.company_by_norm)} en total ({len(to_create)} nuevas)")
 
     def _company_id(self, name):
@@ -360,7 +368,12 @@ class Command(BaseCommand):
         return truncate(f"{ot}-L{legacy_id}", 20)
 
     def _build_order(self, row, order_number, company_id, worker_id) -> LaundryOrder:
-        status = STATUS_MAP.get(norm(row.get("status")), OrderStatus.RECEIVED)
+        raw_status = norm(row.get("status"))
+        if raw_status == LEGACY_BILLED_STATUS:
+            is_flow2 = self.company_delivery_flow.get(company_id) == Company.DeliveryFlow.CLIENT_ONLY
+            status = OrderStatus.COMPLETED if is_flow2 else OrderStatus.DELIVERED
+        else:
+            status = STATUS_MAP.get(raw_status, OrderStatus.RECEIVED)
         received = to_aware(row.get("recepcion")) or to_aware(row.get("rlavanderia")) or to_aware(row.get("entrega"))
         if received is None:
             received = timezone.make_aware(timezone.datetime(1900, 1, 1), timezone.get_current_timezone())
@@ -374,7 +387,11 @@ class Command(BaseCommand):
         if legacy_staff:
             observations = (observations + "\n" if observations else "") + f"[Legado] {legacy_staff}"
 
-        billed = to_aware(row.get("entrega")) if status == OrderStatus.BILLED else None
+        delivered_at = to_aware(row.get("entregado"))
+        if status == OrderStatus.DELIVERED and delivered_at is None:
+            # Legado: las guías COBRADO no siempre registraban `entregado`; la
+            # columna `entrega` guardaba la fecha real de esa entrega.
+            delivered_at = to_aware(row.get("entrega"))
 
         return LaundryOrder(
             order_number=order_number,
@@ -387,8 +404,7 @@ class Command(BaseCommand):
             weight_kg=to_decimal(row.get("peso")),
             received_at=received,
             completed_at=to_aware(row.get("completado")) or to_aware(row.get("despachado")),
-            delivered_at=to_aware(row.get("entregado")),
-            billed_at=billed,
+            delivered_at=delivered_at,
             observations=observations,
             reference=truncate(row.get("ref"), 20),
             control_code=truncate(row.get("control"), 20),

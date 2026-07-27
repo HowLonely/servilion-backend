@@ -233,7 +233,7 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 
 **Modelo Django:** `orders.LaundryOrder`  
 **Nombre de negocio:** **Guía** (legacy: `ot`)  
-**Descripción:** Unidad de trabajo desde recepción de ropa sucia hasta entrega/cobro.
+**Descripción:** Unidad de trabajo desde recepción de ropa sucia hasta la entrega.
 
 | Campo | Tipo | Max | Null | Default | UK/Idx | Descripción |
 |---|---|---|---|---|---|---|
@@ -254,7 +254,6 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 | `completed_at` | DateTimeField | — | SÍ | NULL | — | Auto al pasar a `COMPLETADA` |
 | `dispatched_at` | DateTimeField | — | SÍ | NULL | — | Auto al pasar a `DESPACHADA` |
 | `delivered_at` | DateTimeField | — | SÍ | NULL | — | Auto al pasar a `ENTREGADA` |
-| `billed_at` | DateTimeField | — | SÍ | NULL | — | Auto al pasar a `COBRADA` |
 | `observations` | TextField | — | NO | '' | — | Notas libres (discrepancias, etc.) |
 | `reference` | CharField | 20 | NO | '' | — | Referencia interna |
 | `control_code` | CharField | 20 | NO | '' | — | Código de control |
@@ -357,31 +356,29 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 
 ### 5.3 `OrderStatus` (`orders_laundryorder.status`, historial)
 
+`EN_LAVADO`, `DESPACHADA` y `COBRADA` nunca llegaron a implementarse como estados propios o se retiraron del flujo (ver `orders/models.py::OrderStatus` y FLUJO_NEGOCIO.md §6/§10). El enum vigente es:
+
 | Valor DB | Etiqueta | Timestamp auto |
 |---|---|---|
 | `RECIBIDA` | Recibida | — (estado inicial) |
-| `EN_LAVADO` | En lavado | — |
 | `EN_REVISION` | En revisión | setea `reviewed_by` |
-| `INCOMPLETA` | Incompleta | — |
-| `COMPLETADA` | Completada | `completed_at` |
-| `DESPACHADA` | Despachada | `dispatched_at` |
-| `ENTREGADA` | Entregada | `delivered_at` |
-| `COBRADA` | Cobrada | `billed_at` |
+| `INCOMPLETA` | Incompleta | `incomplete_at` |
+| `COMPLETADA` | Completada | `completed_at` — terminal en Flujo 2 |
+| `ENTREGADA` | Entregada | `delivered_at`, setea `delivered_by` — terminal en Flujo 1 |
 
-#### Transiciones permitidas (`orders.services.ALLOWED_TRANSITIONS`)
+#### Transiciones manuales — botón "Marcar como X" (`orders.services.ALLOWED_TRANSITIONS`)
 
 ```
-RECIBIDA       → EN_LAVADO
-EN_LAVADO      → EN_REVISION | INCOMPLETA
-EN_REVISION    → COMPLETADA | INCOMPLETA
-INCOMPLETA     → EN_LAVADO
-COMPLETADA     → DESPACHADA
-DESPACHADA     → ENTREGADA
-ENTREGADA      → COBRADA
-COBRADA        → (ninguna — estado terminal)
+RECIBIDA       → (ninguna — la decide el sistema, ver abajo)
+EN_REVISION    → (ninguna — la decide el sistema, ver abajo)
+INCOMPLETA     → (ninguna — la decide el sistema, ver abajo)
+COMPLETADA     → ENTREGADA
+ENTREGADA      → (ninguna — estado terminal)
 ```
 
-Cambios vía API: `PATCH /api/orders/{id}/status` — validados en servicio; violaciones → HTTP 400.
+RECIBIDA → EN_REVISION y EN_REVISION/INCOMPLETA → COMPLETADA no son manuales: el sistema las decide solo como efecto de digitalizar la guía (`create_order`), pistolear el empaque (`scan_packed_garment` / `finish_packing`) o resolver una prenda faltante (`resolve_missing_item`) — ver `orders.services._advance_status`.
+
+Cambios manuales vía API: `PATCH /api/orders/{id}/status` — validados en servicio; violaciones → HTTP 400.
 
 ---
 
@@ -483,8 +480,6 @@ Base: `/api/` — Autenticación JWT en header `Authorization: Bearer {access}` 
 | GET | `/` | `?status=&company_id=&worker_id=&date_from=&date_to=` | `LaundryOrderOut[]` |
 | POST | `/` | `LaundryOrderIn` | 201 `LaundryOrderOut` |
 | POST | `/sync` | `OrderSyncBatchIn` | `OrderSyncBatchOut` |
-| POST | `/reports/billing` | `{ company_id, date_from, date_to }` | `{ task_id }` (Celery) |
-| GET | `/reports/billing/{task_id}` | — | `{ status, result? }` |
 | GET | `/{id}` | — | `LaundryOrderOut` |
 | PATCH | `/{id}/status` | `{ status, note? }` | `LaundryOrderOut` o 400 |
 | POST | `/{id}/photo-upload-url` | `{ filename, content_type }` | presigned |
@@ -548,10 +543,10 @@ Referencia: `ejemplo_db_penon.mdb` → export JSONL → `python manage.py import
 | Legado | Nuevo |
 |---|---|
 | *(vacío)* | `RECIBIDA` |
-| `COBRADO` | `COBRADA` |
+| `COBRADO` | `ENTREGADA` (Flujo 1) / `COMPLETADA` (Flujo 2) — según `Company.delivery_flow`, ver `LEGACY_BILLED_STATUS` |
 | `COMPLETO` | `COMPLETADA` |
 | `CHECK` / `CH3ECK` | `EN_REVISION` |
-| `DESPACHADO` | `DESPACHADA` |
+| `DESPACHADO` | `COMPLETADA` |
 | `INCOMPLETO` | `INCOMPLETA` |
 
 **Import:** Idempotente por claves naturales. `client_uuid` se autogenera (no se usa para deduplicar import).
@@ -560,9 +555,7 @@ Referencia: `ejemplo_db_penon.mdb` → export JSONL → `python manage.py import
 
 ## 12. Tareas asíncronas (Celery) que tocan la DB
 
-| Task | Tablas leídas | Descripción |
-|---|---|---|
-| `orders.tasks.generate_billing_report_task` | `orders_laundryorder` | Agrega guías `COBRADA` por empresa y rango `billed_at`. Retorna totales y desglose por trabajador |
+Ninguna por ahora — `orders.tasks.generate_billing_report_task` (reporte de facturación) se retiró junto con el estado `COBRADA`.
 
 ---
 
