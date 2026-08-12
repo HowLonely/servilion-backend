@@ -6,10 +6,38 @@ from ninja.pagination import paginate
 from authentication.auth import JWTAuth
 from authentication.permissions import require_admin
 from camps import services
-from camps.schemas import CampIn, CampOut, RoomIn, RoomOut
+from camps.schemas import CampIn, CampOut, FaenaIn, FaenaOut, RoomIn, RoomOut
 
+faenas_router = Router(auth=JWTAuth())
 camps_router = Router(auth=JWTAuth())
 rooms_router = Router(auth=JWTAuth())
+
+
+# --- Faenas ---
+
+
+@faenas_router.get('/', response=List[FaenaOut])
+@paginate
+def list_faenas(request, search: str | None = None, is_active: bool | None = None):
+    return services.list_faenas(search=search, is_active=is_active)
+
+
+@faenas_router.get('/{faena_id}', response=FaenaOut)
+def get_faena(request, faena_id: int):
+    return services.get_faena(faena_id)
+
+
+@faenas_router.post('/', response={201: FaenaOut})
+@require_admin()
+def create_faena(request, payload: FaenaIn):
+    """Crear una faena es excepcional: solo al empezar a atender un sitio nuevo."""
+    return 201, services.create_faena(payload)
+
+
+@faenas_router.put('/{faena_id}', response=FaenaOut)
+@require_admin()
+def update_faena(request, faena_id: int, payload: FaenaIn):
+    return services.update_faena(faena_id, payload)
 
 
 # --- Campamentos ---
@@ -19,11 +47,11 @@ rooms_router = Router(auth=JWTAuth())
 @paginate
 def list_camps(
     request,
-    client_id: int | None = None,
+    faena_id: int | None = None,
     search: str | None = None,
     is_active: bool | None = None,
 ):
-    return services.list_camps(client_id=client_id, search=search, is_active=is_active)
+    return services.list_camps(faena_id=faena_id, search=search, is_active=is_active)
 
 
 @camps_router.get('/{camp_id}', response=CampOut)
@@ -58,12 +86,12 @@ def deactivate_camp(request, camp_id: int):
 def list_rooms(
     request,
     camp_id: int | None = None,
-    client_id: int | None = None,
+    faena_id: int | None = None,
     search: str | None = None,
     is_active: bool | None = None,
 ):
     return services.list_rooms(
-        camp_id=camp_id, client_id=client_id, search=search, is_active=is_active
+        camp_id=camp_id, faena_id=faena_id, search=search, is_active=is_active
     )
 
 

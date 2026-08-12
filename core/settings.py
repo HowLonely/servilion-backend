@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'workers',
     'garments',
     'orders',
+    'hospitality',
 ]
 
 MIDDLEWARE = [

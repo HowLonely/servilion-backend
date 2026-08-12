@@ -21,6 +21,16 @@ class Client(TimeStampedModel):
 
     name = models.CharField(max_length=100, unique=True)
     tax_id = models.CharField('RUT cliente', max_length=15, blank=True)
+    # Inicial del cliente que antecede al correlativo del `ref` (la "P" de
+    # P1375A). Vive aquí y no en `Company` porque el ref identifica a quién se
+    # le factura la guía: todas las contratistas de un mismo cliente comparten
+    # prefijo y contador, tal como lo hacía el sistema antiguo.
+    reference_prefix = models.CharField(
+        'Prefijo del ref',
+        max_length=3,
+        blank=True,
+        help_text='Inicial del cliente que antecede al correlativo del ref (ej. "P" en P1375A).',
+    )
     contact_name = models.CharField(max_length=100, blank=True)
     phone = models.CharField(max_length=20, blank=True)
     is_single_company = models.BooleanField(
@@ -50,6 +60,23 @@ class Company(TimeStampedModel):
         PER_GARMENT = 'PRENDAS', 'Por prenda'
         PER_KG = 'KILOS', 'Por kilo'
 
+    class ServiceType(models.TextChoices):
+        """Qué lava el contrato, que es lo que decide la forma de la guía.
+
+        PERSONAL es el caso histórico: el morral de un trabajador, con su OT
+        física, su habitación y su entrega individual.
+
+        HOTELERIA es lencería a granel del campamento (sábanas, toallas,
+        cortinas): no hay persona ni pieza de destino, llega por carga y se
+        devuelve al mandante. El sistema antiguo no sabía representarlo y lo
+        forzó creando trabajadores falsos con el nombre del tipo de lencería
+        (ej. "200 JUEGOS DE SABANAS", RUT "0"), apuntados a una pieza inventada.
+        Marcar el contrato aquí es lo que permite dejar de hacer eso.
+        """
+
+        PERSONAL = 'PERSONAL', 'Ropa de trabajador'
+        HOSPITALITY = 'HOTELERIA', 'Lencería de hotelería'
+
     class DeliveryFlow(models.TextChoices):
         """Modalidad de contrato (FLUJO_NEGOCIO.md §2).
 
@@ -65,14 +92,11 @@ class Company(TimeStampedModel):
     name = models.CharField(max_length=100, unique=True)
     tax_id = models.CharField('RUT empresa', max_length=15, blank=True)
     billing_type = models.CharField(max_length=10, choices=BillingType.choices, default=BillingType.PER_GARMENT)
+    service_type = models.CharField(
+        'Tipo de servicio', max_length=10, choices=ServiceType.choices, default=ServiceType.PERSONAL
+    )
     delivery_flow = models.CharField(
         'Modalidad de entrega', max_length=10, choices=DeliveryFlow.choices, default=DeliveryFlow.WITH_ROOM_DELIVERY
-    )
-    reference_prefix = models.CharField(
-        'Prefijo del ref',
-        max_length=3,
-        blank=True,
-        help_text='Inicial de faena/empresa que antecede al correlativo semanal del ref (ej. "P" en P1238).',
     )
     contact_name = models.CharField(max_length=100, blank=True)
     phone = models.CharField(max_length=20, blank=True)

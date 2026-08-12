@@ -9,15 +9,20 @@ from authentication.models import User
 from authentication.permissions import require_admin, require_roles
 from common.schemas import MessageOut
 from orders import services
+from orders.models import LaundryOrder
 from orders.schemas import (
+    AmbiguousReferenceOut,
+    GarmentLabelOut,
     LaundryOrderIn,
     LaundryOrderOut,
     NoteIn,
     OrderStatusHistoryOut,
     OrderSyncBatchIn,
     OrderSyncBatchOut,
+    PackingCodeScanIn,
     PackingProgressOut,
     PackingScanIn,
+    PackingScanOut,
     PhotoConfirmIn,
     PhotoUploadOut,
     PhotoUploadRequestIn,
@@ -81,6 +86,45 @@ def register_site_reception(request, payload: SiteScanIn):
     return 201, scan
 
 
+@router.post(
+    '/scan/packing',
+    response={200: PackingScanOut, 400: MessageOut, 404: MessageOut, 409: AmbiguousReferenceOut},
+)
+@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
+def scan_packing_code(request, payload: PackingCodeScanIn):
+    """Pistoleo único de la mesa de empaque (paso 6).
+
+    Un solo endpoint para los dos códigos que hay sobre la mesa: la boleta del
+    morral abre y cierra, y la etiqueta lavable de una prenda abre y marca en el
+    mismo disparo. El operador no elige modo en pantalla.
+    """
+    try:
+        return 200, services.scan_packing_code(payload.code, user=request.auth, quantity=payload.quantity)
+    except services.AmbiguousReferenceError as exc:
+        # 409: el código es válido pero no alcanza para decidir. La UI muestra
+        # las guías candidatas y reintenta contra el endpoint por `order_id`.
+        return 409, {
+            'detail': str(exc),
+            'reference': exc.reference,
+            'candidates': [
+                {
+                    'order_id': candidate.id,
+                    'order_number': candidate.order_number,
+                    'reference': candidate.reference,
+                    'worker_name': candidate.worker.full_name,
+                    'company_name': candidate.company.name,
+                    'status': candidate.status,
+                    'received_at': candidate.received_at,
+                }
+                for candidate in exc.candidates
+            ],
+        }
+    except LaundryOrder.DoesNotExist as exc:
+        return 404, {'detail': str(exc)}
+    except (services.OrderFlowError, services.InvalidStatusTransition) as exc:
+        return 400, {'detail': str(exc)}
+
+
 @router.get('/scan/{code}', response={200: LaundryOrderOut, 404: MessageOut})
 def find_order_by_code(request, code: str):
     """Resuelve un código pistoleado (OT, ref o control) a la guía correspondiente."""
@@ -138,6 +182,12 @@ def get_status_history(request, order_id: int):
 def get_receipt(request, order_id: int):
     """Datos de la boleta impresa que acompaña el morral limpio de vuelta a faena."""
     return services.build_receipt(order_id)
+
+
+@router.get('/{order_id}/garment-labels', response=List[GarmentLabelOut])
+def get_garment_labels(request, order_id: int):
+    """Etiquetas lavables a imprimir, una por prenda declarada en la guía (paso 4)."""
+    return services.build_garment_labels(order_id)
 
 
 @router.patch('/{order_id}/status', response={200: LaundryOrderOut, 400: MessageOut})

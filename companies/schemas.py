@@ -9,6 +9,8 @@ from common.services import build_object_url
 class ClientIn(Schema):
     name: str
     tax_id: str = ''
+    # Inicial que antecede al correlativo del ref (la "P" de P1375A).
+    reference_prefix: str = ''
     contact_name: str = ''
     phone: str = ''
 
@@ -17,6 +19,7 @@ class ClientOut(Schema):
     id: int
     name: str
     tax_id: str
+    reference_prefix: str
     contact_name: str
     phone: str
     is_single_company: bool
@@ -96,8 +99,10 @@ class CompanyIn(Schema):
     client_id: int | None = None
     tax_id: str = ''
     billing_type: str = 'PRENDAS'
+    # PERSONAL (ropa de trabajador) u HOTELERIA (lencería a granel del
+    # campamento): decide si la empresa opera con guías o con lotes.
+    service_type: str = 'PERSONAL'
     delivery_flow: str = 'FLUJO_1'
-    reference_prefix: str = ''
     contact_name: str = ''
     phone: str = ''
 
@@ -109,8 +114,8 @@ class CompanyOut(Schema):
     name: str
     tax_id: str
     billing_type: str
+    service_type: str
     delivery_flow: str
-    reference_prefix: str
     contact_name: str
     phone: str
     logo_url: str | None

@@ -9,8 +9,12 @@ from garments.models import GarmentType
 from workers.models import Worker
 
 
-# El correlativo semanal del `ref` arranca en 1000 cada semana (ver ReferenceCounter).
+# Rango del correlativo del `ref` (ver ReferenceCounter). Empieza en 1000 y no
+# en 0 para que el código tenga siempre 4 dígitos sin ceros a la izquierda: los
+# ceros iniciales los descartan Excel y las personas al escribir a mano, como ya
+# pasa con códigos de control tipo `00037706`.
 REFERENCE_SEQUENCE_START = 1000
+REFERENCE_SEQUENCE_END = 1999
 
 
 class OrderStatus(models.TextChoices):
@@ -138,6 +142,15 @@ class OrderItem(models.Model):
     custom_name = models.CharField('Prenda fuera de catálogo', max_length=60, blank=True)
     quantity = models.PositiveIntegerField()
     scanned_quantity = models.PositiveIntegerField('Prendas pistoleadas al empacar', default=0)
+    # Código que se imprime en la etiqueta lavable de estas prendas. Junto al
+    # `ref` de la guía forma el código pistoleable del empaque (`P1005-TOA`):
+    # el `ref` resuelve el morral y este segmento la prenda dentro de él.
+    # Se mantiene corto a propósito —el del catálogo (`TOA`), o `X1`/`X2` para
+    # las prendas fuera de catálogo, que no tienen uno— porque el operador lo
+    # tipea a mano cuando la etiqueta vuelve borrada del lavado.
+    # Vacío en las guías anteriores a las etiquetas por prenda: ahí el pistoleo
+    # sigue resolviéndose por el código de catálogo (ver `_match_item`).
+    label_code = models.CharField('Código de etiqueta lavable', max_length=12, blank=True)
 
     class Meta:
         verbose_name = 'Detalle de guía'
@@ -147,6 +160,14 @@ class OrderItem(models.Model):
             # colisionan entre sí, así que una guía puede tener varias líneas
             # fuera de catálogo con nombres distintos.
             models.UniqueConstraint(fields=['order', 'garment_type'], name='unique_garment_type_per_order'),
+            # El código de etiqueta identifica la prenda DENTRO de la guía, así
+            # que solo tiene que ser único ahí. Se excluyen los vacíos (guías
+            # anteriores a las etiquetas por prenda), que no son pistoleables.
+            models.UniqueConstraint(
+                fields=['order', 'label_code'],
+                condition=~models.Q(label_code=''),
+                name='unique_label_code_per_order',
+            ),
             models.CheckConstraint(
                 check=models.Q(garment_type__isnull=False) | ~models.Q(custom_name=''),
                 name='item_has_garment_type_or_custom_name',
@@ -208,27 +229,31 @@ class MissingItemResolution(models.Model):
 
 
 class ReferenceCounter(models.Model):
-    """Correlativo semanal del `ref` por prefijo de faena/empresa.
+    """Correlativo del `ref` por cliente: `P1375A`.
 
-    El negocio resetea el número a 1000 cada semana (FLUJO_NEGOCIO.md §4, paso
-    4), así que la unicidad se define por (prefijo, año ISO, semana ISO) y no
-    por un autoincremental global.
+    Antes se reiniciaba cada semana, lo que reciclaba los códigos en 7 días
+    mientras el 0,1% de los morrales vive 88 y el más longevo del histórico
+    vivió 339: las colisiones estaban garantizadas por construcción. Además el
+    reinicio cortaba el correlativo cada lunes (saltaba de 1990 a 1000), así que
+    no se podía contar volumen por rango ni detectar un faltante que cruzara el
+    fin de semana.
+
+    Ahora el número corre de 1000 a 1999 sin reiniciarse por calendario, y al
+    dar la vuelta avanza la `cycle` (A → B → … → Z → AA). El operador sigue
+    leyendo los mismos 4 dígitos de siempre; la letra solo desempata un morral
+    viejo, que es cuando el número ya se reutilizó.
     """
 
-    prefix = models.CharField(max_length=3)
-    iso_year = models.PositiveSmallIntegerField()
-    iso_week = models.PositiveSmallIntegerField()
+    prefix = models.CharField(max_length=3, unique=True)
+    cycle = models.CharField('Letra de ciclo', max_length=2, default='A')
     last_number = models.PositiveIntegerField(default=REFERENCE_SEQUENCE_START)
 
     class Meta:
         verbose_name = 'Correlativo de ref'
         verbose_name_plural = 'Correlativos de ref'
-        constraints = [
-            models.UniqueConstraint(fields=['prefix', 'iso_year', 'iso_week'], name='unique_reference_counter_week'),
-        ]
 
     def __str__(self) -> str:
-        return f'{self.prefix} {self.iso_year}-W{self.iso_week}: {self.last_number}'
+        return f'{self.prefix}{self.last_number}{self.cycle}'
 
 
 class SiteScan(models.Model):
