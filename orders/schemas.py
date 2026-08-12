@@ -100,6 +100,7 @@ class LaundryOrderOut(Schema):
     worker_name: str
     company_id: int
     company_name: str
+    company_logo_url: str | None
     client_id: int
     client_name: str
     delivery_flow: str
@@ -134,6 +135,12 @@ class LaundryOrderOut(Schema):
     @staticmethod
     def resolve_company_name(obj) -> str:
         return obj.company.name
+
+    @staticmethod
+    def resolve_company_logo_url(obj) -> str | None:
+        from common.services import build_object_url
+
+        return build_object_url(obj.company.logo_key)
 
     @staticmethod
     def resolve_client_id(obj) -> int:
@@ -243,6 +250,54 @@ class PackingProgressOut(Schema):
     items: list[PackingItemProgressOut]
 
 
+class PackingCodeScanIn(Schema):
+    """Pistoleo único de la mesa de empaque: boleta del morral o etiqueta lavable."""
+
+    code: str
+    quantity: int = 1
+
+
+class PackingScanOut(Schema):
+    """Qué hizo el pistoleo: abrió el morral, lo cerró o marcó una prenda."""
+
+    action: str
+    order: LaundryOrderOut
+    progress: PackingProgressOut
+
+
+class AmbiguousOrderOut(Schema):
+    """Guía candidata cuando un `ref` calza con más de un morral abierto."""
+
+    order_id: int
+    order_number: str | None
+    reference: str
+    worker_name: str
+    company_name: str
+    status: str
+    received_at: datetime
+
+
+class AmbiguousReferenceOut(Schema):
+    detail: str
+    reference: str
+    candidates: list[AmbiguousOrderOut]
+
+
+class GarmentLabelOut(Schema):
+    """Etiqueta lavable de una prenda: una por línea declarada en la guía."""
+
+    order_id: int
+    order_number: str | None
+    reference: str
+    label_code: str
+    scan_payload: str
+    garment_name: str
+    worker_name: str
+    company_name: str
+    camp: str
+    quantity: int
+
+
 class ResolveMissingItemIn(Schema):
     """Resuelve una prenda que faltó en una guía INCOMPLETA.
 
@@ -271,7 +326,9 @@ class ReceiptOut(Schema):
     control_code: str
     ticket_number: str
     company_name: str
+    company_logo_url: str | None
     worker_name: str
+    phone: str
     national_id: str
     camp: str
     room: str

@@ -1,12 +1,19 @@
 from django.contrib import admin
 
-from camps.models import Camp, Room
+from camps.models import Camp, Faena, Room
+
+
+@admin.register(Faena)
+class FaenaAdmin(admin.ModelAdmin):
+    list_display = ('name', 'is_active')
+    list_filter = ('is_active',)
+    search_fields = ('name',)
 
 
 @admin.register(Camp)
 class CampAdmin(admin.ModelAdmin):
-    list_display = ('name', 'client', 'is_active')
-    list_filter = ('client', 'is_active')
+    list_display = ('name', 'faena', 'is_active')
+    list_filter = ('faena', 'is_active')
     search_fields = ('name',)
 
 

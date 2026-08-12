@@ -9,12 +9,15 @@ from django.utils import timezone
 
 from authentication.models import User
 from authentication.permissions import PermissionDenied, user_has_role
-from common.services import build_presigned_upload
-from companies.models import Company
+from common.services import build_object_url, build_presigned_upload
+from companies.models import Client, Company
 from companies.services import get_client_price_map
 from camps import services as camps_services
 from camps.models import Room
+from garments.models import GarmentType
 from orders.models import (
+    REFERENCE_SEQUENCE_END,
+    REFERENCE_SEQUENCE_START,
     LaundryOrder,
     MissingItemResolution,
     OrderItem,
@@ -47,7 +50,6 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 # listados los puede mover cualquier staff autenticado.
 STATUS_REQUIRED_ROLES: dict[str, tuple[str, ...]] = {
     OrderStatus.DELIVERED: (User.Role.SUPERVISOR,),
-    OrderStatus.BILLED: (User.Role.ADMIN,),
 }
 
 # Campo de timestamp que se completa automáticamente al entrar a cada estado.
@@ -64,6 +66,31 @@ DEFAULT_TURNAROUND_DAYS = 3
 # Turnos escritos como "7X7", "14x14", "4X3": el primer número son los días en
 # faena, el segundo los días de descanso fuera de ella.
 SHIFT_PATTERN = re.compile(r'^\s*(\d{1,2})\s*[xX]\s*(\d{1,2})\s*$')
+
+# Separador entre el `ref` de la guía y el código de prenda en la etiqueta
+# lavable: `P1005-TOA`. El `ref` que genera `generate_reference` nunca lo trae,
+# así que su presencia es lo que distingue una etiqueta de prenda del código de
+# la boleta del morral (ver `split_garment_label`).
+GARMENT_LABEL_SEPARATOR = '-'
+
+# Prefijo del correlativo de etiqueta de las prendas fuera de catálogo, que no
+# tienen código propio en `GarmentType`.
+CUSTOM_LABEL_PREFIX = 'X'
+
+# Estados en que el morral sigue en planta y su `ref` puede pistolearse. El
+# número del ref se reutiliza al completar un ciclo (ver `ReferenceCounter`), y
+# las etiquetas legadas ni siquiera traen letra de ciclo: acotar a las guías
+# todavía abiertas es lo que vuelve el código resoluble sin pedirle al operador
+# ningún dato que la etiqueta no muestre.
+OPEN_PACKING_STATUSES = (OrderStatus.RECEIVED, OrderStatus.QUALITY_CHECK, OrderStatus.INCOMPLETE)
+
+# Resultado de `scan_packing_code`, para que la UI sepa qué acaba de pasar
+# físicamente con el morral.
+PACKING_ACTION_OPENED = 'ABIERTO'
+PACKING_ACTION_CLOSED = 'CERRADO'
+PACKING_ACTION_SCANNED = 'PISTOLEADA'
+# La prenda que faltaba reapareció: se pistoleó sobre una guía ya Incompleta.
+PACKING_ACTION_FOUND = 'ENCONTRADA'
 
 
 class InvalidStatusTransition(Exception):
@@ -99,36 +126,86 @@ def calculate_promised_at(shift: str, reference: datetime) -> datetime:
     return reference + timedelta(days=min(DEFAULT_TURNAROUND_DAYS, max(on_site_days - 1, 1)))
 
 
-@transaction.atomic
-def generate_reference(company: Company, moment: datetime | None = None) -> str:
-    """Genera el `ref` operativo (ej. `P1238`): prefijo de faena/empresa + correlativo semanal.
+def next_cycle(cycle: str) -> str:
+    """Avanza la letra de ciclo: A → B → … → Z → AA → AB.
 
-    El correlativo se resetea a 1000 cada semana ISO. El `select_for_update`
-    serializa la generación entre digitadores concurrentes para que dos guías
-    de la misma semana nunca compartan ref.
+    Es un contador en base 26 con letras, no un simple `chr(ord+1)`: al pasar de
+    Z tiene que seguir contando en vez de salirse del alfabeto.
     """
-    moment = moment or timezone.now()
-    iso_year, iso_week, _ = timezone.localtime(moment).isocalendar()
-    prefix = (company.reference_prefix or company.name[:1]).upper()
+    letters = list(cycle.upper() or 'A')
+    position = len(letters) - 1
+    while position >= 0:
+        if letters[position] != 'Z':
+            letters[position] = chr(ord(letters[position]) + 1)
+            return ''.join(letters)
+        letters[position] = 'A'
+        position -= 1
+    return 'A' + ''.join(letters)
 
-    counter, created = ReferenceCounter.objects.select_for_update().get_or_create(
-        prefix=prefix, iso_year=iso_year, iso_week=iso_week
-    )
+
+@transaction.atomic
+def generate_reference(client: Client) -> str:
+    """Genera el `ref` operativo del cliente: `P1375A`.
+
+    Prefijo del cliente al que se le factura, correlativo de 4 dígitos y letra
+    de ciclo. El correlativo no se reinicia por calendario: corre de 1000 a 1999
+    y al dar la vuelta avanza la letra, que es lo que evita que el mismo código
+    identifique a dos morrales vivos al mismo tiempo.
+
+    El prefijo es del cliente y no de la empresa porque el ref identifica a
+    quién se le factura: todas las contratistas del cliente comparten contador,
+    igual que en el sistema antiguo, donde un solo `P` cubría a todas las
+    empresas de Peñón.
+
+    El `select_for_update` serializa la generación entre digitadores
+    concurrentes para que dos guías nunca compartan ref.
+    """
+    prefix = (client.reference_prefix or client.name[:1]).upper()
+
+    counter, created = ReferenceCounter.objects.select_for_update().get_or_create(prefix=prefix)
     if not created:
         counter.last_number += 1
-        counter.save(update_fields=['last_number'])
-    return f'{prefix}{counter.last_number}'
+        if counter.last_number > REFERENCE_SEQUENCE_END:
+            counter.last_number = REFERENCE_SEQUENCE_START
+            counter.cycle = next_cycle(counter.cycle)
+        counter.save(update_fields=['last_number', 'cycle'])
+    return f'{prefix}{counter.last_number}{counter.cycle}'
+
+
+def build_label_codes(items: list[OrderItemIn]) -> list[str]:
+    """Código de etiqueta lavable de cada línea, único dentro de la guía.
+
+    Las prendas del catálogo usan su propio código (`TOA`), que es el que el
+    operador reconoce de un vistazo al buscar qué falta. Las que van fuera de
+    catálogo no tienen uno, así que reciben un correlativo `X1`, `X2`.
+    """
+    catalog_codes = dict(
+        GarmentType.objects.filter(
+            id__in=[item.garment_type_id for item in items if item.garment_type_id]
+        ).values_list('id', 'code')
+    )
+    label_codes = []
+    custom_sequence = 0
+    for item in items:
+        if item.garment_type_id:
+            label_codes.append(catalog_codes.get(item.garment_type_id, ''))
+        else:
+            custom_sequence += 1
+            label_codes.append(f'{CUSTOM_LABEL_PREFIX}{custom_sequence}')
+    return label_codes
 
 
 def _build_items(order: LaundryOrder, items: list[OrderItemIn]) -> int:
+    label_codes = build_label_codes(items)
     OrderItem.objects.bulk_create(
         OrderItem(
             order=order,
             garment_type_id=item.garment_type_id,
             custom_name=item.custom_name,
             quantity=item.quantity,
+            label_code=label_code,
         )
-        for item in items
+        for item, label_code in zip(items, label_codes)
     )
     return sum(item.quantity for item in items)
 
@@ -153,7 +230,7 @@ def create_order(payload: LaundryOrderIn, received_by: User) -> LaundryOrder:
     `ref`, se calcula la fecha tentativa de entrega y se enlazan los pistoleos
     que la faena ya había registrado para este número de OT.
     """
-    worker = Worker.objects.select_related('company').get(pk=payload.worker_id)
+    worker = Worker.objects.select_related('company', 'company__client').get(pk=payload.worker_id)
     shift = payload.shift or worker.shift
     laundry_received_at = payload.laundry_received_at or timezone.now()
 
@@ -168,7 +245,7 @@ def create_order(payload: LaundryOrderIn, received_by: User) -> LaundryOrder:
         laundry_received_at=laundry_received_at,
         promised_at=payload.promised_at or calculate_promised_at(shift, laundry_received_at),
         observations=payload.observations,
-        reference=payload.reference or generate_reference(worker.company, laundry_received_at),
+        reference=payload.reference or generate_reference(worker.company.client),
         control_code=payload.control_code,
         # Congela el destino de la entrega: `worker.current_room` puede
         # cambiar mientras la ropa está en planta, pero este morral se entrega
@@ -400,21 +477,33 @@ def get_packing_progress(order_id: int) -> dict:
     return _packing_progress(get_order(order_id))
 
 
-@transaction.atomic
-def scan_packed_garment(order_id: int, code: str, quantity: int, user: User) -> dict:
-    """Suma una prenda pistoleada al morral limpio (FLUJO_NEGOCIO.md §4, paso 6).
+def _item_codes(item: OrderItem) -> set[str]:
+    """Códigos con los que se puede pistolear esta prenda, en minúsculas."""
+    codes = {item.label_code, item.custom_name}
+    if item.garment_type_id:
+        codes.add(item.garment_type.code)
+    return {code.strip().lower() for code in codes if code and code.strip()}
 
-    `code` es el código del tipo de prenda del catálogo; para las prendas fuera
-    de catálogo se acepta su nombre digitado. El primer pistoleo de la guía la
-    saca de RECIBIDA: ya no espera un clic manual de "en revisión".
+
+def _match_item(order: LaundryOrder, code: str) -> OrderItem | None:
+    """Resuelve el segmento de prenda de una etiqueta a la línea de la guía.
+
+    Acepta el código de etiqueta lavable (`label_code`) y también el del
+    catálogo o el nombre digitado, que son los que traen las guías anteriores a
+    las etiquetas por prenda y los que el operador tipea de memoria.
     """
-    order = LaundryOrder.objects.select_for_update().get(pk=order_id)
-    code = code.strip()
-    item = (
+    return (
         order.items.select_related('garment_type')
-        .filter(Q(garment_type__code__iexact=code) | Q(custom_name__iexact=code))
+        .filter(
+            Q(label_code__iexact=code) | Q(garment_type__code__iexact=code) | Q(custom_name__iexact=code)
+        )
         .first()
     )
+
+
+def _register_scanned_item(order: LaundryOrder, code: str, quantity: int, user: User) -> dict:
+    """Suma una prenda pistoleada a una guía ya resuelta y bloqueada."""
+    item = _match_item(order, code)
     if item is None:
         raise OrderFlowError(
             f'La guía {order.order_number or order.reference} no declara ninguna prenda con el código "{code}".'
@@ -429,7 +518,22 @@ def scan_packed_garment(order_id: int, code: str, quantity: int, user: User) -> 
     item.save(update_fields=['scanned_quantity'])
     if order.status == OrderStatus.RECEIVED:
         _advance_status(order, OrderStatus.QUALITY_CHECK, user, note='Primer pistoleo de empaque.')
-    return _packing_progress(get_order(order_id))
+    return _packing_progress(get_order(order.id))
+
+
+@transaction.atomic
+def scan_packed_garment(order_id: int, code: str, quantity: int, user: User) -> dict:
+    """Suma una prenda pistoleada al morral limpio (FLUJO_NEGOCIO.md §4, paso 6).
+
+    `code` es el código del tipo de prenda del catálogo; para las prendas fuera
+    de catálogo se acepta su nombre digitado. El primer pistoleo de la guía la
+    saca de RECIBIDA: ya no espera un clic manual de "en revisión".
+
+    Exige tener la guía ya resuelta. El pistoleo de una etiqueta lavable, que
+    resuelve la guía y la prenda en un solo gesto, va por `scan_packing_code`.
+    """
+    order = LaundryOrder.objects.select_for_update().get(pk=order_id)
+    return _register_scanned_item(order, code.strip(), quantity, user)
 
 
 @transaction.atomic
@@ -460,6 +564,150 @@ def finish_packing(order_id: int, user: User, note: str = '') -> LaundryOrder:
     order.save(update_fields=['packed_at', 'packed_by', 'updated_at'])
     _advance_status(order, OrderStatus.COMPLETED, user, note=note or 'Morral validado por pistoleo.')
     return order
+
+
+class AmbiguousReferenceError(Exception):
+    """El `ref` pistoleado calza con más de una guía abierta.
+
+    Pasa cuando una guía vieja quedó sin cerrar y su ref se reutilizó en una
+    semana posterior. Se traslada la decisión al operador con las guías
+    candidatas: reconoce la suya por trabajador y empresa, que es lo que tiene
+    a la vista, y no por un dato de calendario que no puede deducir.
+    """
+
+    def __init__(self, reference: str, candidates: list[LaundryOrder]):
+        self.reference = reference
+        self.candidates = candidates
+        super().__init__(
+            f'El ref "{reference}" corresponde a {len(candidates)} guías abiertas: '
+            'elige a cuál pertenece la prenda.'
+        )
+
+
+def split_garment_label(code: str) -> tuple[str, str]:
+    """Descompone `P1005-TOA` en (ref del morral, código de prenda).
+
+    Devuelve el código intacto y una prenda vacía cuando no trae separador: ese
+    es el caso de la boleta del morral, cuyo código se resuelve por otra vía.
+    """
+    reference, separator, label_code = code.rpartition(GARMENT_LABEL_SEPARATOR)
+    if not separator:
+        return code, ''
+    return reference.strip(), label_code.strip()
+
+
+def find_open_order(code: str, reference_only: bool = False) -> LaundryOrder:
+    """Resuelve un código de la mesa de empaque a la guía cuyo morral sigue en planta.
+
+    El `ref` no es único en el histórico (se resetea cada semana), pero sí lo es
+    en la práctica entre las guías abiertas, que son las únicas cuyo morral
+    puede estar sobre la mesa. Ver `OPEN_PACKING_STATUSES`.
+
+    `reference_only` distingue las dos etiquetas: la lavable trae el ref del
+    morral en ese segmento y nada más, mientras que la boleta se pistoléa
+    indistintamente por OT, ref o código de control (igual que
+    `find_order_by_code`, que sí mira el histórico completo porque sirve a la
+    consulta de faena, donde la guía ya está entregada).
+    """
+    lookup = (
+        Q(reference=code)
+        if reference_only
+        else Q(order_number=code) | Q(reference=code) | Q(control_code=code)
+    )
+    candidates = list(
+        LaundryOrder.objects.select_related(
+            'worker', 'company', 'company__client', 'delivery_room', 'delivery_room__camp'
+        )
+        .prefetch_related('items__garment_type')
+        .filter(lookup, status__in=OPEN_PACKING_STATUSES)
+        .order_by('-received_at')
+    )
+    if not candidates:
+        raise LaundryOrder.DoesNotExist(f'No hay ninguna guía abierta con el código "{code}".')
+    if len(candidates) > 1:
+        raise AmbiguousReferenceError(code, candidates)
+    return candidates[0]
+
+
+@transaction.atomic
+def scan_packing_code(code: str, user: User, quantity: int = 1) -> dict:
+    """Pistoleo único de la mesa de empaque (FLUJO_NEGOCIO.md §4, paso 6).
+
+    El operador dispara siempre al mismo endpoint y el sistema deduce qué hacer
+    según lo que trae el código, para que no tenga que elegir modo en pantalla:
+
+    - Boleta del morral (OT, ref o código de control): abre el morral si estaba
+      cerrado y lo cierra si ya estaba abierto.
+    - Etiqueta lavable de una prenda (`P1005-TOA`): abre el morral si hacía
+      falta y marca la prenda en el mismo gesto.
+
+    Cerrar es `finish_packing`, así que el morral queda Completado o Incompleto
+    según lo que se alcanzó a pistolear — nunca por una decisión manual.
+    """
+    code = code.strip()
+    if not code:
+        raise OrderFlowError('No se recibió ningún código.')
+
+    reference, label_code = split_garment_label(code)
+    if label_code:
+        order = find_open_order(reference, reference_only=True)
+        # `find_open_order` no bloquea la fila: se vuelve a leer con
+        # select_for_update para serializar dos pistoleos simultáneos de la
+        # misma guía, que es lo normal con varios operadores en la mesa.
+        locked = LaundryOrder.objects.select_for_update().get(pk=order.id)
+
+        if locked.status == OrderStatus.INCOMPLETE:
+            # El morral ya se cerró y esta prenda es la que faltaba: pistolearla
+            # es resolverla como Encontrada, con su registro en
+            # `MissingItemResolution`, no sumarla como un pistoleo más.
+            item = _match_item(locked, label_code)
+            if item is None:
+                raise OrderFlowError(
+                    f'La guía {locked.order_number or locked.reference} no declara ninguna '
+                    f'prenda con el código "{label_code}".'
+                )
+            resolve_missing_item(
+                order.id, item.id, MissingItemResolution.ResolutionType.FOUND,
+                quantity, user=user, code=label_code,
+            )
+            return {
+                'action': PACKING_ACTION_FOUND,
+                'order': get_order(order.id),
+                'progress': get_packing_progress(order.id),
+            }
+
+        progress = _register_scanned_item(locked, label_code, quantity, user)
+        return {'action': PACKING_ACTION_SCANNED, 'order': get_order(order.id), 'progress': progress}
+
+    try:
+        order = find_open_order(code)
+    except LaundryOrder.DoesNotExist:
+        # Existe pero ya salió de empaque: vale la pena decirlo con el estado en
+        # vez de un "no encontrado" que haría dudar de la etiqueta.
+        order = find_order_by_code(code)
+        raise OrderFlowError(
+            f'La guía {order.order_number or order.reference} está {OrderStatus(order.status).label} '
+            'y su morral ya no está en empaque.'
+        ) from None
+
+    locked = LaundryOrder.objects.select_for_update().get(pk=order.id)
+    if locked.status == OrderStatus.RECEIVED:
+        _advance_status(locked, OrderStatus.QUALITY_CHECK, user, note='Morral abierto por pistoleo de boleta.')
+        action = PACKING_ACTION_OPENED
+    elif locked.status == OrderStatus.QUALITY_CHECK:
+        # El morral ya estaba abierto: este segundo disparo lo cierra.
+        # `finish_packing` decide Completada o Incompleta según lo pistoleado.
+        finish_packing(order.id, user=user)
+        action = PACKING_ACTION_CLOSED
+    else:
+        # INCOMPLETA: el morral ya se cerró y quedó esperando la prenda que
+        # faltó. Volver a cerrarlo solo repetiría la observación, así que se
+        # dirige al operador a lo único que mueve la guía: pistolear la prenda.
+        raise OrderFlowError(
+            f'La guía {locked.order_number or locked.reference} ya está cerrada como Incompleta. '
+            'Pistolea la etiqueta de la prenda que reapareció para resolverla.'
+        )
+    return {'action': action, 'order': get_order(order.id), 'progress': get_packing_progress(order.id)}
 
 
 @transaction.atomic
@@ -497,8 +745,9 @@ def resolve_missing_item(
         )
 
     if resolution_type == MissingItemResolution.ResolutionType.FOUND:
-        expected = (item.garment_type.code if item.garment_type_id else item.custom_name).strip()
-        if code.strip().lower() != expected.lower():
+        # Se acepta cualquiera de sus códigos: la prenda que reaparece trae
+        # pegada su etiqueta lavable, no el código del catálogo.
+        if code.strip().lower() not in _item_codes(item):
             raise OrderFlowError(f'El código pistoleado no corresponde a {item.display_name}.')
     elif resolution_type == MissingItemResolution.ResolutionType.PURCHASED:
         if not purchase_cost or purchase_cost <= 0:
@@ -621,7 +870,12 @@ def build_receipt(order_id: int) -> dict:
         'control_code': order.control_code,
         'ticket_number': order.ticket_number,
         'company_name': order.company.name,
+        'company_logo_url': build_object_url(order.company.logo_key),
         'worker_name': worker.full_name,
+        # El comprobante físico trae una casilla de teléfono junto al n° de OT.
+        # Casi siempre viene vacía o en "0" (el trabajador no lo anota), pero la
+        # casilla se imprime igual para no alterar el formato conocido.
+        'phone': worker.phone,
         'national_id': worker.national_id,
         # La boleta muestra el destino DE ESTA GUÍA, no dónde vive hoy el
         # trabajador: si se mudó mientras su ropa estaba en planta, el morral
@@ -637,6 +891,42 @@ def build_receipt(order_id: int) -> dict:
             {'name': item.display_name, 'quantity': item.quantity} for item in order.items.all()
         ],
     }
+
+
+def build_garment_labels(order_id: int) -> list[dict]:
+    """Etiquetas lavables a imprimir, una por línea declarada en la guía.
+
+    Se emiten al digitalizar la OT, que es el primer momento en que existen las
+    líneas de la guía y por tanto su código de etiqueta. Se devuelve una sola
+    etiqueta por línea aunque declare varias unidades (ej. 4 poleras): las
+    unidades de una misma prenda comparten físicamente el mismo código, así que
+    un solo adhesivo alcanza y se pistolea tantas veces como unidades vuelvan
+    del lavado (`scanned_quantity`), sin importar cuál volvió primero.
+
+    Sigue la misma convención que `build_receipt`: el backend entrega los datos
+    y quien imprime arma el layout físico.
+    """
+    order = get_order(order_id)
+    labels = []
+    for item in order.items.all():
+        # Las guías anteriores a las etiquetas por prenda no tienen
+        # `label_code`; se cae al código de catálogo, que es lo que igual
+        # reconoce `_match_item` al pistolear.
+        label_code = item.label_code or (item.garment_type.code if item.garment_type_id else item.custom_name)
+        labels.append({
+            'order_id': order.id,
+            'order_number': order.order_number,
+            'reference': order.reference,
+            'label_code': label_code,
+            # Lo que lee la pistola: resuelve morral y prenda de una vez.
+            'scan_payload': f'{order.reference}{GARMENT_LABEL_SEPARATOR}{label_code}',
+            'garment_name': item.display_name,
+            'worker_name': order.worker.full_name,
+            'company_name': order.company.name,
+            'camp': order.delivery_room.camp.name if order.delivery_room_id else '',
+            'quantity': item.quantity,
+        })
+    return labels
 
 
 def request_photo_upload(order_id: int, filename: str, content_type: str) -> dict:

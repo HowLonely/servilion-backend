@@ -48,5 +48,5 @@ class SyncConflictAdmin(admin.ModelAdmin):
 
 @admin.register(ReferenceCounter)
 class ReferenceCounterAdmin(admin.ModelAdmin):
-    list_display = ('prefix', 'iso_year', 'iso_week', 'last_number')
-    list_filter = ('prefix', 'iso_year')
+    list_display = ('prefix', 'cycle', 'last_number')
+    list_filter = ('prefix', 'cycle')
