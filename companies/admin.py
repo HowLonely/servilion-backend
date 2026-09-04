@@ -11,16 +11,17 @@ class ClientGarmentPriceInline(admin.TabularInline):
 
 @admin.register(Client)
 class ClientAdmin(admin.ModelAdmin):
-    list_display = ('name', 'is_single_company', 'is_active', 'updated_at')
-    list_filter = ('is_single_company', 'is_active')
+    list_display = ('name', 'faena', 'is_single_company', 'is_active', 'updated_at')
+    list_filter = ('faena', 'is_single_company', 'is_active')
     search_fields = ('name', 'tax_id')
+    autocomplete_fields = ('faena',)
     inlines = (ClientGarmentPriceInline,)
 
 
 @admin.register(Company)
 class CompanyAdmin(admin.ModelAdmin):
-    list_display = ('name', 'client', 'billing_type', 'is_active', 'updated_at')
-    list_filter = ('billing_type', 'is_active', 'client')
+    list_display = ('name', 'client', 'client_role', 'billing_type', 'is_active', 'updated_at')
+    list_filter = ('client_role', 'billing_type', 'is_active', 'client')
     search_fields = ('name', 'tax_id')
     autocomplete_fields = ('client',)
 

@@ -24,11 +24,21 @@ class OrderStatus(models.TextChoices):
     # eliminó — antes obligaba a un clic manual que no representaba nada real.
     RECEIVED = 'RECIBIDA', 'Recibida'
     QUALITY_CHECK = 'EN_REVISION', 'En revisión'
+    # INCOMPLETA y COMPLETA son las dos salidas del CIERRE del morral (el
+    # segundo pistoleo de la boleta), no del despacho: describen con qué quedó
+    # el morral, no dónde está. Por eso ya no se llaman "despachada completa" /
+    # "despachada incompleta" — esa era justamente la confusión de ejes que
+    # DESPACHADA vino a deshacer.
     INCOMPLETE = 'INCOMPLETA', 'Incompleta'
-    COMPLETED = 'COMPLETADA', 'Completada'
-    # DESPACHADA también se eliminó: no había ningún pistoleo que representara
-    # "salió de planta", así que el concepto queda absorbido por COMPLETADA. El
-    # próximo hito con evidencia real es la recepción en faena (ver SiteScan).
+    COMPLETED = 'COMPLETADA', 'Completa'
+    # DESPACHADA se había eliminado porque no existía ningún pistoleo que
+    # representara "salió de planta". Ahora sí lo hay: sobre un morral ya
+    # cerrado (Completa o Incompleta), el siguiente disparo de la boleta es el
+    # despacho. Es un eje distinto al de la completitud — una guía se despacha
+    # incompleta si la prenda que faltó viaja después—, así que no se duplica
+    # en dos estados: la completitud se sigue leyendo en `incomplete_at` y en
+    # las resoluciones pendientes.
+    DISPATCHED = 'DESPACHADA', 'Despachada'
     DELIVERED = 'ENTREGADA', 'Entregada'
 
 
@@ -80,6 +90,10 @@ class LaundryOrder(TimeStampedModel):
     # Junto con `completed_at` permite medir cuánto demoró resolverse.
     incomplete_at = models.DateTimeField('Guía marcada incompleta al empacar', null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    # Tercer pistoleo de la boleta: el morral cerrado sale de planta rumbo a
+    # faena (FLUJO_NEGOCIO.md §4, paso 7). Separa "listo en el andén" de "ya
+    # viajando", que antes eran el mismo COMPLETADA.
+    dispatched_at = models.DateTimeField('Morral despachado a faena', null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
 
     observations = models.TextField(blank=True)
@@ -101,6 +115,9 @@ class LaundryOrder(TimeStampedModel):
     packed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+'
     )
+    dispatched_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+'
+    )
     delivered_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+'
     )
@@ -118,6 +135,7 @@ class LaundryOrder(TimeStampedModel):
             # indexado. Ver ai_context/REPORTES_API_CONTRACT.md §3.
             models.Index(fields=['incomplete_at'], name='ord_incomplete_at_idx'),
             models.Index(fields=['completed_at'], name='ord_completed_at_idx'),
+            models.Index(fields=['dispatched_at'], name='ord_dispatched_at_idx'),
             models.Index(fields=['delivered_at'], name='ord_delivered_at_idx'),
         ]
 
@@ -197,7 +215,14 @@ class MissingItemResolution(models.Model):
         PURCHASED = 'COMPRADA', 'Comprada'
 
     order = models.ForeignKey(LaundryOrder, on_delete=models.CASCADE, related_name='missing_item_resolutions')
-    item = models.ForeignKey(OrderItem, on_delete=models.CASCADE, related_name='resolutions')
+    # Null en el empaque por unidad: el adhesivo que emite la báscula identifica
+    # una prenda física (`P1375A-03`), no un tipo, así que cuando esa unidad
+    # reaparece no hay línea de la guía a la que imputarla. La resolución igual
+    # se registra —el panel de Calidad cuenta encontradas contra compradas— y
+    # `note` guarda el código de la unidad.
+    item = models.ForeignKey(
+        OrderItem, on_delete=models.CASCADE, related_name='resolutions', null=True, blank=True
+    )
     resolution_type = models.CharField(max_length=15, choices=ResolutionType.choices)
     quantity = models.PositiveIntegerField(default=1)
     purchase_cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
@@ -205,6 +230,20 @@ class MissingItemResolution(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+'
     )
     resolved_at = models.DateTimeField(auto_now_add=True)
+    # Cuándo esta prenda salió físicamente a faena. Null = se resolvió pero
+    # todavía está en planta esperando su envío.
+    #
+    # La prenda que aparece (o la que se compra para reponerla) tiene que
+    # viajar igual que el morral, y casi nunca alcanza el mismo camión: el
+    # morral ya se despachó incompleto. Ese segundo envío es un hecho físico
+    # propio y se registra aquí, en la prenda, y no en la guía —que ya está
+    # DESPACHADA y no vuelve a cambiar de estado por esto—. Es la contraparte
+    # de que `confirm_clean_reception` sea repetible: cada envío tiene su
+    # llegada. Ver `dispatch_order` en services.py.
+    shipped_at = models.DateTimeField('Prenda despachada a faena', null=True, blank=True)
+    shipped_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+'
+    )
     note = models.CharField(max_length=255, blank=True)
 
     class Meta:
@@ -216,6 +255,9 @@ class MissingItemResolution(models.Model):
         indexes = [
             models.Index(fields=['resolved_at'], name='mir_resolved_at_idx'),
             models.Index(fields=['resolution_type'], name='mir_res_type_idx'),
+            # Las prendas resueltas que aún no viajan: es la cola de trabajo del
+            # segundo envío y se consulta por guía en cada pistoleo de boleta.
+            models.Index(fields=['order', 'shipped_at'], name='mir_order_shipped_idx'),
         ]
         constraints = [
             models.CheckConstraint(

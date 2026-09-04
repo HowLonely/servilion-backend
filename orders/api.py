@@ -225,6 +225,21 @@ def finish_packing(request, order_id: int, payload: NoteIn):
     return 200, services.get_order(order_id)
 
 
+@router.post('/{order_id}/dispatch', response={200: LaundryOrderOut, 400: MessageOut})
+@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
+def dispatch_order(request, order_id: int, payload: NoteIn):
+    """Despacha a faena un morral ya cerrado (paso 7).
+
+    La vía normal es el tercer pistoleo de la boleta en la mesa de empaque
+    (`/scan/packing`); este endpoint es el equivalente por id para el panel,
+    igual que `/packing/finish` lo es del segundo disparo.
+    """
+    try:
+        return 200, services.dispatch_order(order_id, user=request.auth, note=payload.note)
+    except services.OrderFlowError as exc:
+        return 400, {'detail': str(exc)}
+
+
 @router.post('/{order_id}/incomplete/resolve', response={200: LaundryOrderOut, 400: MessageOut})
 @require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
 def resolve_missing_item(request, order_id: int, payload: ResolveMissingItemIn):

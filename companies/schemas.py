@@ -9,6 +9,9 @@ from common.services import build_object_url
 class ClientIn(Schema):
     name: str
     tax_id: str = ''
+    # Faena donde opera el cliente. La heredan todas sus empresas y es lo que se
+    # imprime en la etiqueta lavable y en la boleta.
+    faena_id: int | None = None
     # Inicial que antecede al correlativo del ref (la "P" de P1375A).
     reference_prefix: str = ''
     contact_name: str = ''
@@ -19,12 +22,18 @@ class ClientOut(Schema):
     id: int
     name: str
     tax_id: str
+    faena_id: int | None
+    faena_name: str
     reference_prefix: str
     contact_name: str
     phone: str
     is_single_company: bool
     is_active: bool
     company_count: int
+
+    @staticmethod
+    def resolve_faena_name(obj) -> str:
+        return obj.faena.name if obj.faena_id else ''
 
     @staticmethod
     def resolve_company_count(obj) -> int:
@@ -97,6 +106,14 @@ class CompanyIn(Schema):
     # Opcional: si no llega, el service crea un cliente 1:1 con el mismo nombre
     # (caso "el cliente es la misma empresa").
     client_id: int | None = None
+    # Solo se usa cuando `client_id` es None: es la faena del cliente 1:1 que se
+    # crea junto a la empresa. Si la empresa entra a un cliente existente, la
+    # faena la define ese cliente y este campo se ignora.
+    faena_id: int | None = None
+    # MANDANTE (la empresa del propio cliente, se le lava directo) o CONTRATISTA
+    # (trabaja para ese cliente en la misma faena). Decide si la etiqueta lavable
+    # y la boleta imprimen la palabra "Contratista".
+    client_role: str = 'CONTRATISTA'
     tax_id: str = ''
     billing_type: str = 'PRENDAS'
     # PERSONAL (ropa de trabajador) u HOTELERIA (lencería a granel del
@@ -111,8 +128,13 @@ class CompanyOut(Schema):
     id: int
     client_id: int
     client_name: str
+    # Faena heredada del cliente: la empresa no la elige, la hereda.
+    faena_id: int | None
+    faena_name: str
     name: str
     tax_id: str
+    client_role: str
+    is_contractor: bool
     billing_type: str
     service_type: str
     delivery_flow: str
@@ -124,6 +146,18 @@ class CompanyOut(Schema):
     @staticmethod
     def resolve_client_name(obj) -> str:
         return obj.client.name
+
+    @staticmethod
+    def resolve_faena_id(obj) -> int | None:
+        return obj.client.faena_id
+
+    @staticmethod
+    def resolve_faena_name(obj) -> str:
+        return obj.faena_name
+
+    @staticmethod
+    def resolve_is_contractor(obj) -> bool:
+        return obj.is_contractor
 
     @staticmethod
     def resolve_logo_url(obj) -> str | None:

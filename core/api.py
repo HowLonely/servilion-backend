@@ -14,6 +14,7 @@ from hospitality.api import router as hospitality_router
 from orders.api import router as orders_router
 from orders.delivery_api import router as delivery_router
 from orders.report_api import router as reports_router
+from weighing.api import router as weighing_router
 from workers.api import router as workers_router
 
 api = NinjaAPI(
@@ -56,6 +57,7 @@ api.add_router('/garments/', garments_router, tags=['Prendas'])
 api.add_router('/faenas/', faenas_router, tags=['Faenas'])
 api.add_router('/camps/', camps_router, tags=['Campamentos'])
 api.add_router('/rooms/', rooms_router, tags=['Habitaciones'])
+api.add_router('/weighing/', weighing_router, tags=['Pesaje'])
 api.add_router('/orders/', orders_router, tags=['Guías'])
 api.add_router('/delivery/', delivery_router, tags=['Entrega en habitación'])
 api.add_router('/hospitality/', hospitality_router, tags=['Hotelería'])

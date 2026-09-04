@@ -31,16 +31,21 @@ from orders.schemas import LaundryOrderIn, OrderItemIn, OrderSyncIn
 from workers.models import Worker
 
 # Transiciones que el staff puede declarar a mano desde el botón "Marcar
-# como X" del panel. RECIBIDA -> EN_REVISION y EN_REVISION/INCOMPLETA ->
-# COMPLETADA no aparecen aquí a propósito: el sistema las decide solo, como
-# efecto de digitalizar la guía (`create_order`), de pistolear el empaque
-# (`scan_packed_garment` / `finish_packing`) y de resolver una prenda faltante
-# (`resolve_missing_item`) — ver `_advance_status`.
+# como X" del panel. RECIBIDA -> EN_REVISION, EN_REVISION/INCOMPLETA ->
+# COMPLETADA y COMPLETADA/INCOMPLETA -> DESPACHADA no aparecen aquí a
+# propósito: el sistema las decide solo, como efecto de digitalizar la guía
+# (`create_order`), de pistolear el empaque (`scan_packed_garment` /
+# `finish_packing`), de resolver una prenda faltante (`resolve_missing_item`) y
+# de pistolear la boleta del morral ya cerrado (`dispatch_order`) — ver
+# `_advance_status`.
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     OrderStatus.RECEIVED: set(),
     OrderStatus.QUALITY_CHECK: set(),
     OrderStatus.INCOMPLETE: set(),
-    OrderStatus.COMPLETED: {OrderStatus.DELIVERED},
+    # Cerrado no es despachado: el morral sigue en planta hasta que la boleta
+    # se pistolea por tercera vez, así que la entrega ya no cuelga de aquí.
+    OrderStatus.COMPLETED: set(),
+    OrderStatus.DISPATCHED: {OrderStatus.DELIVERED},
     OrderStatus.DELIVERED: set(),
 }
 
@@ -56,6 +61,7 @@ STATUS_REQUIRED_ROLES: dict[str, tuple[str, ...]] = {
 STATUS_TIMESTAMP_FIELD: dict[str, str] = {
     OrderStatus.INCOMPLETE: 'incomplete_at',
     OrderStatus.COMPLETED: 'completed_at',
+    OrderStatus.DISPATCHED: 'dispatched_at',
     OrderStatus.DELIVERED: 'delivered_at',
 }
 
@@ -84,6 +90,35 @@ CUSTOM_LABEL_PREFIX = 'X'
 # ningún dato que la etiqueta no muestre.
 OPEN_PACKING_STATUSES = (OrderStatus.RECEIVED, OrderStatus.QUALITY_CHECK, OrderStatus.INCOMPLETE)
 
+# Estados en que el morral ya se cerró pero sigue en planta, esperando el
+# pistoleo que lo despacha. INCOMPLETA está en ambas tuplas a propósito: es el
+# único estado que acepta las dos cosas —la etiqueta de una prenda que reaparece
+# lo resuelve, la boleta lo despacha tal como está— y el separador de la
+# etiqueta lavable es lo que distingue un caso del otro (ver `scan_packing_code`).
+CLOSED_PACKING_STATUSES = (OrderStatus.COMPLETED, OrderStatus.INCOMPLETE)
+
+# Estados en que un pistoleo de prenda todavía resuelve un faltante. DESPACHADA
+# entra porque el morral puede haber salido incompleto: la prenda que aparece
+# después viaja en un envío aparte, caso que `confirm_clean_reception` ya
+# contempla al ser repetible. Se acota con `_is_resolving_missing`, que exige
+# que quede algo pendiente de verdad.
+RESOLVABLE_STATUSES = (OrderStatus.INCOMPLETE, OrderStatus.DISPATCHED)
+
+# Estados en que la boleta puede despachar algo. DESPACHADA entra porque el
+# despacho es repetible: tras el morral pueden salir, en envíos aparte, las
+# prendas que se resolvieron después (ver `unshipped_resolutions`). Solo el
+# primero mueve el estado; los siguientes son envíos de la misma guía.
+DISPATCHABLE_STATUSES = CLOSED_PACKING_STATUSES + (OrderStatus.DISPATCHED,)
+
+# Cómo se valida el morral en la mesa de empaque. UNIT es el modo nuevo: la
+# guía viene de un pesaje y cada prenda física trae su propio adhesivo
+# (`P1375A-03`), así que se cuentan unidades únicas. TYPE es el modo histórico,
+# que sigue vivo para las guías digitalizadas sin pasar por la báscula: el
+# adhesivo identifica el TIPO de prenda y se pistolea tantas veces como
+# unidades vuelvan.
+PACKING_MODE_UNIT = 'unidad'
+PACKING_MODE_TYPE = 'tipo'
+
 # Resultado de `scan_packing_code`, para que la UI sepa qué acaba de pasar
 # físicamente con el morral.
 PACKING_ACTION_OPENED = 'ABIERTO'
@@ -91,6 +126,8 @@ PACKING_ACTION_CLOSED = 'CERRADO'
 PACKING_ACTION_SCANNED = 'PISTOLEADA'
 # La prenda que faltaba reapareció: se pistoleó sobre una guía ya Incompleta.
 PACKING_ACTION_FOUND = 'ENCONTRADA'
+# El morral cerrado salió de planta rumbo a faena (paso 7).
+PACKING_ACTION_DISPATCHED = 'DESPACHADA'
 
 
 class InvalidStatusTransition(Exception):
@@ -234,18 +271,33 @@ def create_order(payload: LaundryOrderIn, received_by: User) -> LaundryOrder:
     shift = payload.shift or worker.shift
     laundry_received_at = payload.laundry_received_at or timezone.now()
 
+    # Import local: `weighing.services` importa `generate_reference` de este
+    # módulo, así que a nivel de módulo serían imports circulares. La dirección
+    # natural de la dependencia es weighing -> orders (el pesaje necesita el
+    # correlativo del ref); este es el único punto donde va al revés.
+    from weighing import services as weighing_services
+
+    weigh_in = weighing_services.get_weigh_in(payload.weigh_in_id) if payload.weigh_in_id else None
+
     order = LaundryOrder.objects.create(
         order_number=normalize_order_number(payload.order_number),
         ticket_number=payload.ticket_number,
         worker=worker,
         company=worker.company,
         shift=shift,
-        weight_kg=payload.weight_kg,
+        # El peso lo puso la báscula; el digitador solo lo sobrescribe si tipea
+        # uno distinto (mismo criterio que con las prendas: manda el digitador).
+        weight_kg=payload.weight_kg if payload.weight_kg is not None else (weigh_in.weight_kg if weigh_in else None),
         received_at=payload.received_at,
         laundry_received_at=laundry_received_at,
         promised_at=payload.promised_at or calculate_promised_at(shift, laundry_received_at),
         observations=payload.observations,
-        reference=payload.reference or generate_reference(worker.company.client),
+        # El ref NO se genera cuando la guía viene de un pesaje: ya está impreso
+        # en los adhesivos que andan pegados a la ropa desde la recepción.
+        # Emitir uno nuevo dejaría el morral con dos identidades.
+        reference=(
+            weigh_in.reference if weigh_in else (payload.reference or generate_reference(worker.company.client))
+        ),
         control_code=payload.control_code,
         # Congela el destino de la entrega: `worker.current_room` puede
         # cambiar mientras la ropa está en planta, pero este morral se entrega
@@ -255,6 +307,11 @@ def create_order(payload: LaundryOrderIn, received_by: User) -> LaundryOrder:
     )
     order.garment_count = _build_items(order, payload.items)
     order.save(update_fields=['garment_count'])
+    if weigh_in:
+        # Marca el pesaje como digitalizado y lo enlaza. Va después de crear las
+        # líneas para que un fallo en el detalle no deje el pesaje consumido:
+        # todo esto corre dentro de la misma transacción.
+        weighing_services.consume(weigh_in.id, order)
     _attach_pending_site_scans(order)
     return order
 
@@ -292,7 +349,7 @@ def list_orders(
     date_to: datetime | None = None,
 ) -> QuerySet[LaundryOrder]:
     queryset = LaundryOrder.objects.select_related(
-        'worker', 'company', 'company__client', 'delivery_room', 'delivery_room__camp'
+        'worker', 'company', 'company__client', 'delivery_room', 'delivery_room__camp', 'weigh_in'
     ).prefetch_related('items__garment_type')
     if status:
         queryset = queryset.filter(status=status)
@@ -321,9 +378,13 @@ def list_orders(
 
 def get_order(order_id: int) -> LaundryOrder:
     return LaundryOrder.objects.select_related(
-        'worker', 'worker__company', 'company', 'company__client', 'received_by', 'reviewed_by',
-        'delivery_room', 'delivery_room__camp',
-    ).prefetch_related('items__garment_type').get(pk=order_id)
+        'worker', 'worker__company', 'company', 'company__client', 'company__client__faena',
+        'received_by', 'reviewed_by',
+        'delivery_room', 'delivery_room__camp', 'delivery_room__camp__faena',
+        # OneToOne inverso: sin él, cada guía consulta su pesaje por separado en
+        # el detalle y en el progreso de empaque.
+        'weigh_in',
+    ).prefetch_related('items__garment_type', 'weigh_in__labels').get(pk=order_id)
 
 
 def find_order_by_code(code: str) -> LaundryOrder:
@@ -381,6 +442,9 @@ def _advance_status(order: LaundryOrder, new_status: str, user: User, note: str 
     if new_status == OrderStatus.QUALITY_CHECK:
         order.reviewed_by = user
         update_fields.append('reviewed_by')
+    if new_status == OrderStatus.DISPATCHED:
+        order.dispatched_by = user
+        update_fields.append('dispatched_by')
     if new_status == OrderStatus.DELIVERED:
         order.delivered_by = user
         update_fields.append('delivered_by')
@@ -395,8 +459,9 @@ def _advance_status(order: LaundryOrder, new_status: str, user: User, note: str 
 def update_status(order_id: int, new_status: str, user: User, note: str = '') -> LaundryOrder:
     """Transición manual disparada por el botón "Marcar como X" del panel.
 
-    Solo cubre los pasos sin escaneo físico (reprocesar, despachar, cobrar):
-    ver el comentario de `ALLOWED_TRANSITIONS`.
+    Solo cubre los pasos sin escaneo físico. Hoy queda una sola: DESPACHADA ->
+    ENTREGADA para el Flujo 1 cuando la entrega no entra por la app. Todo lo
+    demás tiene un pistoleo detrás — ver el comentario de `ALLOWED_TRANSITIONS`.
     """
     order = LaundryOrder.objects.select_for_update().select_related('company').get(pk=order_id)
     if new_status not in allowed_transitions(order):
@@ -449,14 +514,54 @@ def register_site_reception(code: str, user: User, scanned_at: datetime | None =
 # --- Paso 6: pistoleo de empaque del morral limpio ---
 
 
+def order_units(order: LaundryOrder):
+    """Adhesivos por unidad de esta guía, o vacío si no vino de un pesaje.
+
+    Es lo que distingue los dos modos de empaque: con adhesivos por unidad se
+    valida prenda física por prenda física; sin ellos se sigue validando por
+    tipo, como las guías anteriores a la báscula.
+    """
+    weigh_in = getattr(order, 'weigh_in', None)
+    if weigh_in is None:
+        return []
+    return list(weigh_in.labels.all())
+
+
 def _packing_progress(order: LaundryOrder) -> dict:
     items = list(order.items.select_related('garment_type'))
+    units = order_units(order)
+
+    if units:
+        scanned = [unit for unit in units if unit.scanned_at]
+        return {
+            'order_id': order.id,
+            'declared_total': len(units),
+            'scanned_total': len(scanned),
+            'is_complete': len(scanned) == len(units),
+            # El detalle por tipo se sigue publicando: es lo que el operador lee
+            # para saber QUÉ era la unidad que falta, ya que el adhesivo del
+            # pesaje no lo dice.
+            'items': _progress_items(items),
+            'mode': PACKING_MODE_UNIT,
+            'units': [
+                {'sequence': unit.sequence, 'code': unit.code, 'is_scanned': unit.scanned_at is not None}
+                for unit in units
+            ],
+        }
+
     return {
         'order_id': order.id,
         'declared_total': sum(item.quantity for item in items),
         'scanned_total': sum(item.scanned_quantity for item in items),
         'is_complete': all(item.scanned_quantity >= item.quantity for item in items) and bool(items),
-        'items': [
+        'items': _progress_items(items),
+        'mode': PACKING_MODE_TYPE,
+        'units': [],
+    }
+
+
+def _progress_items(items) -> list[dict]:
+    return [
             {
                 'item_id': item.id,
                 'garment_type_id': item.garment_type_id,
@@ -469,8 +574,7 @@ def _packing_progress(order: LaundryOrder) -> dict:
                 'scanned_quantity': item.scanned_quantity,
             }
             for item in items
-        ],
-    }
+    ]
 
 
 def get_packing_progress(order_id: int) -> dict:
@@ -501,6 +605,88 @@ def _match_item(order: LaundryOrder, code: str) -> OrderItem | None:
     )
 
 
+def _register_scanned_unit(order: LaundryOrder, code: str, user: User) -> dict:
+    """Marca como empacada una prenda física identificada por su adhesivo.
+
+    A diferencia del modo por tipo, aquí no hay cantidad: un adhesivo es una
+    prenda. Ese es justamente el punto — pistolear dos veces la misma prenda ya
+    no la cuenta dos veces, sino que avisa.
+    """
+    from weighing.models import WeighLabel
+
+    unit = WeighLabel.objects.select_for_update().filter(weigh_in__order=order, code__iexact=code).first()
+    if unit is None:
+        raise OrderFlowError(
+            f'La etiqueta "{code}" no pertenece al morral '
+            f'{order.order_number or order.reference}.'
+        )
+    if unit.scanned_at is not None:
+        raise OrderFlowError(f'La prenda {unit.code} ya se había pistoleado en este morral.')
+
+    unit.scanned_at = timezone.now()
+    unit.scanned_by = user
+    unit.save(update_fields=['scanned_at', 'scanned_by'])
+    if order.status == OrderStatus.RECEIVED:
+        _advance_status(order, OrderStatus.QUALITY_CHECK, user, note='Morral abierto por pistoleo de prenda.')
+    return _packing_progress(order)
+
+
+def _resolve_missing_unit(order: LaundryOrder, code: str, user: User) -> dict:
+    """La prenda que faltaba apareció y se pistoleó en una guía ya cerrada.
+
+    Equivale a `resolve_missing_item` con resolución ENCONTRADA, pero sobre una
+    unidad física en vez de una línea de la guía. Se registra igual en
+    `MissingItemResolution` —sin `item`, con el código de la unidad en la nota—
+    para que el panel de Calidad siga contando encontradas contra compradas.
+    """
+    progress = _register_scanned_unit(order, code, user)
+    MissingItemResolution.objects.create(
+        order=order,
+        item=None,
+        resolution_type=MissingItemResolution.ResolutionType.FOUND,
+        quantity=1,
+        resolved_by=user,
+        note=code.strip().upper(),
+    )
+    if progress['is_complete']:
+        order.packed_at = timezone.now()
+        order.packed_by = user
+        order.save(update_fields=['packed_at', 'packed_by', 'updated_at'])
+        # Solo desde INCOMPLETA: si el morral ya se despachó, resolver la prenda
+        # no lo devuelve a planta, así que conserva DESPACHADA. La completitud
+        # recuperada se lee en el progreso y en las resoluciones registradas.
+        if order.status == OrderStatus.INCOMPLETE:
+            _advance_status(order, OrderStatus.COMPLETED, user, note='Prenda(s) faltante(s) resuelta(s).')
+    return progress
+
+
+def unshipped_resolutions(order: LaundryOrder):
+    """Prendas ya resueltas que siguen en planta esperando su envío a faena.
+
+    Son la carga del segundo despacho: el morral salió incompleto, la prenda
+    apareció (o se compró para reponerla) y ahora tiene que viajar sola. Ver
+    `MissingItemResolution.shipped_at`.
+    """
+    return order.missing_item_resolutions.filter(shipped_at__isnull=True)
+
+
+def _is_resolving_missing(order: LaundryOrder) -> bool:
+    """¿Un pistoleo de prenda sobre esta guía resuelve un faltante?
+
+    Cierto en INCOMPLETA siempre, y en DESPACHADA solo si el morral salió con
+    un faltante que sigue pendiente. La condición sobre INCOMPLETA no mira
+    `incomplete_at` a propósito: el legado lo dejó nulo en muchas guías y esas
+    igual deben poder resolverse.
+    """
+    if order.status == OrderStatus.INCOMPLETE:
+        return True
+    return (
+        order.status == OrderStatus.DISPATCHED
+        and order.incomplete_at is not None
+        and not _packing_progress(order)['is_complete']
+    )
+
+
 def _register_scanned_item(order: LaundryOrder, code: str, quantity: int, user: User) -> dict:
     """Suma una prenda pistoleada a una guía ya resuelta y bloqueada."""
     item = _match_item(order, code)
@@ -525,14 +711,23 @@ def _register_scanned_item(order: LaundryOrder, code: str, quantity: int, user: 
 def scan_packed_garment(order_id: int, code: str, quantity: int, user: User) -> dict:
     """Suma una prenda pistoleada al morral limpio (FLUJO_NEGOCIO.md §4, paso 6).
 
-    `code` es el código del tipo de prenda del catálogo; para las prendas fuera
-    de catálogo se acepta su nombre digitado. El primer pistoleo de la guía la
-    saca de RECIBIDA: ya no espera un clic manual de "en revisión".
+    Qué es `code` depende del modo de la guía (ver `_packing_progress`): en el
+    modo por unidad es el adhesivo de una prenda física (`P1375A-03`); en el
+    modo por tipo, el código del tipo de prenda del catálogo, o el nombre
+    digitado para las que van fuera de catálogo. El primer pistoleo de la guía
+    la saca de RECIBIDA: ya no espera un clic manual de "en revisión".
 
     Exige tener la guía ya resuelta. El pistoleo de una etiqueta lavable, que
     resuelve la guía y la prenda en un solo gesto, va por `scan_packing_code`.
     """
     order = LaundryOrder.objects.select_for_update().get(pk=order_id)
+    if order_units(order):
+        # Igual que en `scan_packing_code`: sobre una guía ya cerrada
+        # incompleta, pistolear la unidad que reaparece la resuelve como
+        # Encontrada en vez de sumarla como un pistoleo más.
+        if _is_resolving_missing(order):
+            return _resolve_missing_unit(order, code.strip(), user)
+        return _register_scanned_unit(order, code.strip(), user)
     return _register_scanned_item(order, code.strip(), quantity, user)
 
 
@@ -548,11 +743,18 @@ def finish_packing(order_id: int, user: User, note: str = '') -> LaundryOrder:
     progress = _packing_progress(order)
 
     if not progress['is_complete']:
-        faltantes = ', '.join(
-            f'{item["name"]}: faltan {item["quantity"] - item["scanned_quantity"]}'
-            for item in progress['items']
-            if item['scanned_quantity'] < item['quantity']
-        )
+        if progress['mode'] == PACKING_MODE_UNIT:
+            # El adhesivo del pesaje no dice qué prenda es, así que se nombra la
+            # unidad. El detalle declarado en la guía queda al lado en pantalla
+            # para que el operador deduzca qué buscar.
+            pendientes = [unit['code'] for unit in progress['units'] if not unit['is_scanned']]
+            faltantes = f'faltan {len(pendientes)} prendas: {", ".join(pendientes)}'
+        else:
+            faltantes = ', '.join(
+                f'{item["name"]}: faltan {item["quantity"] - item["scanned_quantity"]}'
+                for item in progress['items']
+                if item['scanned_quantity'] < item['quantity']
+            )
         observation = note or f'Morral incompleto al empacar. {faltantes}'
         order.observations = f'{order.observations}\n{observation}'.strip()
         order.save(update_fields=['observations', 'updated_at'])
@@ -563,6 +765,72 @@ def finish_packing(order_id: int, user: User, note: str = '') -> LaundryOrder:
     order.packed_by = user
     order.save(update_fields=['packed_at', 'packed_by', 'updated_at'])
     _advance_status(order, OrderStatus.COMPLETED, user, note=note or 'Morral validado por pistoleo.')
+    return order
+
+
+# --- Paso 7: despacho del morral cerrado ---
+
+
+@transaction.atomic
+def dispatch_order(order_id: int, user: User, note: str = '') -> LaundryOrder:
+    """Saca de planta un morral ya cerrado (FLUJO_NEGOCIO.md §4, paso 7).
+
+    Es el tercer disparo de la boleta sobre el mismo morral: el primero lo abre,
+    el segundo lo cierra —Completa o Incompleta, según lo pistoleado— y este lo
+    despacha. Separar el cierre del despacho es lo que permite distinguir un
+    morral listo en el andén de uno que ya viaja, que antes eran el mismo
+    COMPLETADA y por eso el estado se leía como "despachada completa".
+
+    Se despacha igual un morral Incompleto: la operación no retiene el envío
+    esperando una prenda, esa viaja después (ver `RESOLVABLE_STATUSES`).
+
+    Y por eso es REPETIBLE. Cuando la prenda que faltaba aparece —o se compra
+    una para reponerla— con el morral ya despachado, esa prenda tiene que
+    viajar en su propio envío, que casi nunca es el mismo camión. Ese segundo
+    despacho no mueve el estado (la guía ya está DESPACHADA, y no volvió a
+    planta): sella `shipped_at` en las resoluciones que salen, de modo que cada
+    envío quede emparejado con su llegada en `confirm_clean_reception`, que ya
+    era repetible por el otro lado.
+    """
+    order = LaundryOrder.objects.select_for_update().select_related('company').get(pk=order_id)
+    if order.status not in DISPATCHABLE_STATUSES:
+        raise OrderFlowError(
+            f'La guía {order.order_number or order.reference} está '
+            f'{OrderStatus(order.status).label} y no tiene nada que despachar.'
+        )
+
+    pending = list(unshipped_resolutions(order).select_related('item__garment_type'))
+    is_first_dispatch = order.status != OrderStatus.DISPATCHED
+
+    if not is_first_dispatch and not pending:
+        # Ya se despachó y no hay ninguna prenda esperando: un disparo más
+        # sobre la misma boleta no representa ningún envío.
+        raise OrderFlowError(
+            f'La guía {order.order_number or order.reference} ya está despachada y no tiene '
+            'prendas pendientes de enviar.'
+        )
+
+    now = timezone.now()
+    if pending:
+        MissingItemResolution.objects.filter(pk__in=[r.pk for r in pending]).update(
+            shipped_at=now, shipped_by=user
+        )
+
+    if not is_first_dispatch:
+        detalle = ', '.join(r.item.display_name if r.item_id else r.note for r in pending)
+        OrderStatusHistory.objects.create(
+            order=order, previous_status=order.status, new_status=order.status, changed_by=user,
+            note=(note or f'Prenda(s) despachada(s) a faena en envío aparte: {detalle}.')[:255],
+        )
+        return order
+
+    if not note:
+        note = (
+            'Morral despachado a faena.'
+            if order.status == OrderStatus.COMPLETED
+            else 'Morral despachado a faena con prenda(s) faltante(s) pendiente(s).'
+        )
+    _advance_status(order, OrderStatus.DISPATCHED, user, note=note)
     return order
 
 
@@ -579,7 +847,7 @@ class AmbiguousReferenceError(Exception):
         self.reference = reference
         self.candidates = candidates
         super().__init__(
-            f'El ref "{reference}" corresponde a {len(candidates)} guías abiertas: '
+            f'El ref "{reference}" corresponde a {len(candidates)} guías todavía en planta: '
             'elige a cuál pertenece la prenda.'
         )
 
@@ -596,12 +864,14 @@ def split_garment_label(code: str) -> tuple[str, str]:
     return reference.strip(), label_code.strip()
 
 
-def find_open_order(code: str, reference_only: bool = False) -> LaundryOrder:
-    """Resuelve un código de la mesa de empaque a la guía cuyo morral sigue en planta.
+def _find_order_in_statuses(
+    code: str, statuses: tuple[str, ...], reference_only: bool, missing_detail: str
+) -> LaundryOrder:
+    """Resuelve un código de planta a la única guía en `statuses` que lo lleva.
 
-    El `ref` no es único en el histórico (se resetea cada semana), pero sí lo es
-    en la práctica entre las guías abiertas, que son las únicas cuyo morral
-    puede estar sobre la mesa. Ver `OPEN_PACKING_STATUSES`.
+    El `ref` no es único en el histórico (el número se reutiliza al cerrar un
+    ciclo), pero sí lo es en la práctica entre las guías que todavía están en
+    planta, que son las únicas cuyo morral puede estar físicamente ahí.
 
     `reference_only` distingue las dos etiquetas: la lavable trae el ref del
     morral en ese segmento y nada más, mientras que la boleta se pistoléa
@@ -616,17 +886,67 @@ def find_open_order(code: str, reference_only: bool = False) -> LaundryOrder:
     )
     candidates = list(
         LaundryOrder.objects.select_related(
-            'worker', 'company', 'company__client', 'delivery_room', 'delivery_room__camp'
+            'worker', 'company', 'company__client', 'delivery_room', 'delivery_room__camp', 'weigh_in'
         )
-        .prefetch_related('items__garment_type')
-        .filter(lookup, status__in=OPEN_PACKING_STATUSES)
+        .prefetch_related('items__garment_type', 'weigh_in__labels')
+        .filter(lookup, status__in=statuses)
         .order_by('-received_at')
     )
     if not candidates:
-        raise LaundryOrder.DoesNotExist(f'No hay ninguna guía abierta con el código "{code}".')
+        raise LaundryOrder.DoesNotExist(missing_detail.format(code=code))
     if len(candidates) > 1:
         raise AmbiguousReferenceError(code, candidates)
     return candidates[0]
+
+
+def find_open_order(code: str, reference_only: bool = False) -> LaundryOrder:
+    """Resuelve un código al morral que sigue ABIERTO en la mesa de empaque.
+
+    Ver `OPEN_PACKING_STATUSES`: son los estados en que todavía se pistolean
+    prendas o queda un cierre pendiente.
+    """
+    return _find_order_in_statuses(
+        code, OPEN_PACKING_STATUSES, reference_only,
+        'No hay ninguna guía abierta con el código "{code}".',
+    )
+
+
+def find_dispatchable_order(code: str) -> LaundryOrder:
+    """Resuelve la boleta de una guía que todavía tiene algo que despachar.
+
+    Es la contraparte de `find_open_order` para el paso 7. Cubre los dos
+    envíos: el morral cerrado que aún no sale de planta (Completa o
+    Incompleta), y la guía ya despachada a la que le quedan prendas resueltas
+    esperando su envío aparte.
+
+    Una guía despachada SIN prendas pendientes queda fuera a propósito: ya no
+    tiene carga, y su ref puede estar reutilizado por otro morral (ver
+    `ReferenceCounter`), así que resolverla sería imputar el pistoleo a la guía
+    equivocada. Solo por boleta —el despacho mueve carga, nunca identifica una
+    prenda—, por eso no admite `reference_only`.
+    """
+    missing_detail = 'No hay ninguna carga pendiente de despacho con el código "{code}".'
+    order = _find_order_in_statuses(code, DISPATCHABLE_STATUSES, False, missing_detail)
+    if order.status == OrderStatus.DISPATCHED and not unshipped_resolutions(order).exists():
+        raise LaundryOrder.DoesNotExist(missing_detail.format(code=code))
+    return order
+
+
+def find_resolvable_order(code: str, reference_only: bool = False) -> LaundryOrder:
+    """Resuelve el ref de un morral ya despachado que dejó una prenda pendiente.
+
+    Es el único caso en que una guía fuera de planta sigue aceptando pistoleos
+    de prenda: salió incompleta y la que faltaba apareció después. Se exige que
+    el faltante siga abierto para que el ref de una guía despachada completa
+    NO sea resoluble — su número ya puede estar reutilizado por otro morral
+    (ver `ReferenceCounter`), y ahí una coincidencia sería una prenda imputada
+    a la guía equivocada.
+    """
+    missing_detail = 'No hay ninguna guía abierta con el código "{code}".'
+    order = _find_order_in_statuses(code, (OrderStatus.DISPATCHED,), reference_only, missing_detail)
+    if not _is_resolving_missing(order):
+        raise LaundryOrder.DoesNotExist(missing_detail.format(code=code))
+    return order
 
 
 @transaction.atomic
@@ -636,13 +956,15 @@ def scan_packing_code(code: str, user: User, quantity: int = 1) -> dict:
     El operador dispara siempre al mismo endpoint y el sistema deduce qué hacer
     según lo que trae el código, para que no tenga que elegir modo en pantalla:
 
-    - Boleta del morral (OT, ref o código de control): abre el morral si estaba
-      cerrado y lo cierra si ya estaba abierto.
+    - Boleta del morral (OT, ref o código de control): tres disparos sucesivos
+      sobre el mismo morral lo abren, lo cierran y lo despachan.
     - Etiqueta lavable de una prenda (`P1005-TOA`): abre el morral si hacía
       falta y marca la prenda en el mismo gesto.
 
-    Cerrar es `finish_packing`, así que el morral queda Completado o Incompleto
+    Cerrar es `finish_packing`, así que el morral queda Completo o Incompleto
     según lo que se alcanzó a pistolear — nunca por una decisión manual.
+    Despachar es `dispatch_order`, y ocurre desde cualquiera de esos dos: el
+    morral incompleto también viaja, con su faltante anotado.
     """
     code = code.strip()
     if not code:
@@ -650,13 +972,31 @@ def scan_packing_code(code: str, user: User, quantity: int = 1) -> dict:
 
     reference, label_code = split_garment_label(code)
     if label_code:
-        order = find_open_order(reference, reference_only=True)
+        try:
+            order = find_open_order(reference, reference_only=True)
+        except LaundryOrder.DoesNotExist:
+            # El morral pudo despacharse incompleto y la prenda aparecer
+            # después: ahí el ref sigue siendo pistoleable para resolverla.
+            order = find_resolvable_order(reference, reference_only=True)
         # `find_open_order` no bloquea la fila: se vuelve a leer con
         # select_for_update para serializar dos pistoleos simultáneos de la
         # misma guía, que es lo normal con varios operadores en la mesa.
         locked = LaundryOrder.objects.select_for_update().get(pk=order.id)
 
-        if locked.status == OrderStatus.INCOMPLETE:
+        if order_units(locked):
+            # Modo unidad: el segmento es el número de prenda dentro del morral,
+            # no un tipo. Se resuelve contra los adhesivos que emitió la báscula.
+            if _is_resolving_missing(locked):
+                progress = _resolve_missing_unit(locked, code, user)
+                return {
+                    'action': PACKING_ACTION_FOUND,
+                    'order': get_order(order.id),
+                    'progress': progress,
+                }
+            progress = _register_scanned_unit(locked, code, user)
+            return {'action': PACKING_ACTION_SCANNED, 'order': get_order(order.id), 'progress': progress}
+
+        if _is_resolving_missing(locked):
             # El morral ya se cerró y esta prenda es la que faltaba: pistolearla
             # es resolverla como Encontrada, con su registro en
             # `MissingItemResolution`, no sumarla como un pistoleo más.
@@ -682,13 +1022,19 @@ def scan_packing_code(code: str, user: User, quantity: int = 1) -> dict:
     try:
         order = find_open_order(code)
     except LaundryOrder.DoesNotExist:
-        # Existe pero ya salió de empaque: vale la pena decirlo con el estado en
-        # vez de un "no encontrado" que haría dudar de la etiqueta.
-        order = find_order_by_code(code)
-        raise OrderFlowError(
-            f'La guía {order.order_number or order.reference} está {OrderStatus(order.status).label} '
-            'y su morral ya no está en empaque.'
-        ) from None
+        try:
+            # O el morral se cerró Completo en un disparo anterior y sigue en
+            # el andén, o la guía ya se despachó y quedó una prenda resuelta
+            # esperando su envío aparte. En ambos casos este disparo despacha.
+            order = find_dispatchable_order(code)
+        except LaundryOrder.DoesNotExist:
+            # Existe pero ya salió de planta: vale la pena decirlo con el estado
+            # en vez de un "no encontrado" que haría dudar de la etiqueta.
+            order = find_order_by_code(code)
+            raise OrderFlowError(
+                f'La guía {order.order_number or order.reference} está '
+                f'{OrderStatus(order.status).label} y su morral ya no está en planta.'
+            ) from None
 
     locked = LaundryOrder.objects.select_for_update().get(pk=order.id)
     if locked.status == OrderStatus.RECEIVED:
@@ -696,17 +1042,19 @@ def scan_packing_code(code: str, user: User, quantity: int = 1) -> dict:
         action = PACKING_ACTION_OPENED
     elif locked.status == OrderStatus.QUALITY_CHECK:
         # El morral ya estaba abierto: este segundo disparo lo cierra.
-        # `finish_packing` decide Completada o Incompleta según lo pistoleado.
+        # `finish_packing` decide Completa o Incompleta según lo pistoleado.
         finish_packing(order.id, user=user)
         action = PACKING_ACTION_CLOSED
     else:
-        # INCOMPLETA: el morral ya se cerró y quedó esperando la prenda que
-        # faltó. Volver a cerrarlo solo repetiría la observación, así que se
-        # dirige al operador a lo único que mueve la guía: pistolear la prenda.
-        raise OrderFlowError(
-            f'La guía {locked.order_number or locked.reference} ya está cerrada como Incompleta. '
-            'Pistolea la etiqueta de la prenda que reapareció para resolverla.'
-        )
+        # COMPLETA o INCOMPLETA: el morral ya está cerrado, así que este tercer
+        # disparo lo despacha. Incluso incompleto: la prenda que falte se sigue
+        # resolviendo pistoleando SU etiqueta, que trae separador y por eso no
+        # llega nunca hasta acá.
+        #
+        # DESPACHADA: la guía ya viajó y esto es el envío aparte de la prenda
+        # que apareció después. `dispatch_order` distingue los dos casos.
+        dispatch_order(order.id, user=user)
+        action = PACKING_ACTION_DISPATCHED
     return {'action': action, 'order': get_order(order.id), 'progress': get_packing_progress(order.id)}
 
 
@@ -732,10 +1080,17 @@ def resolve_missing_item(
     se completa igual que si hubiera calzado a la primera —incluido `packed_at`,
     para que la línea de tiempo muestre "Empaquetado" alcanzado—, pero
     conservando `incomplete_at` para poder medir cuánto demoró la resolución.
+
+    Sigue disponible después del despacho: un morral se despacha incompleto y
+    la prenda que aparece viaja en un envío aparte, así que el faltante se
+    resuelve igual con la guía ya en DESPACHADA (ver `_is_resolving_missing`).
     """
     order = LaundryOrder.objects.select_for_update().select_related('company').get(pk=order_id)
-    if order.status != OrderStatus.INCOMPLETE:
-        raise OrderFlowError('Solo se puede resolver una prenda faltante en una guía Incompleta.')
+    if not _is_resolving_missing(order):
+        raise OrderFlowError(
+            'Solo se puede resolver una prenda faltante en una guía Incompleta, '
+            'o en una ya despachada que salió con el faltante pendiente.'
+        )
 
     item = order.items.select_related('garment_type').get(pk=item_id)
     missing = item.quantity - item.scanned_quantity
@@ -767,7 +1122,10 @@ def resolve_missing_item(
         order.packed_at = timezone.now()
         order.packed_by = user
         order.save(update_fields=['packed_at', 'packed_by', 'updated_at'])
-        _advance_status(order, OrderStatus.COMPLETED, user, note='Prenda(s) faltante(s) resuelta(s).')
+        # Igual que en `_resolve_missing_unit`: un morral ya despachado no
+        # vuelve a COMPLETADA, porque no volvió a planta.
+        if order.status == OrderStatus.INCOMPLETE:
+            _advance_status(order, OrderStatus.COMPLETED, user, note='Prenda(s) faltante(s) resuelta(s).')
     return get_order(order_id)
 
 
@@ -784,8 +1142,14 @@ def confirm_clean_reception(order_id: int, user: User, note: str = '') -> Laundr
     a faena queda registrada por separado (una fila de `SiteScan` por envío).
     """
     order = LaundryOrder.objects.select_for_update().get(pk=order_id)
-    if order.status not in (OrderStatus.COMPLETED, OrderStatus.INCOMPLETE):
-        raise OrderFlowError('Solo se puede recibir en faena un morral que ya salió de planta (Completada o Incompleta).')
+    # El gate era COMPLETADA/INCOMPLETA solo porque no existía un estado para
+    # "salió de planta". Ahora existe, así que se exige el despacho: un morral
+    # cerrado pero todavía en el andén no puede haber llegado a faena.
+    if order.status not in (OrderStatus.DISPATCHED, OrderStatus.DELIVERED):
+        raise OrderFlowError(
+            'Solo se puede recibir en faena un morral ya despachado. '
+            f'La guía {order.order_number or order.reference} está {OrderStatus(order.status).label}.'
+        )
 
     SiteScan.objects.create(
         # `scanned_code` no admite null; si la guía no tiene OT física se usa
@@ -828,10 +1192,12 @@ def register_delivery(order_id: int, user: User, note: str = '', delivered_at: d
 def get_site_counters(date_from: datetime | None = None, date_to: datetime | None = None) -> dict:
     """Contadores ENTREGADOS / DESPACHADOS de la pantalla de faena (FLUJO_NEGOCIO.md §4, paso 2).
 
-    Ya no existe un estado ni un timestamp propio de "despachada" (ver
-    `OrderStatus`): "enviada" queda representada por COMPLETADA/ENTREGADA (ya
-    salió de empaque), y "pendiente de entrega" por COMPLETADA a secas
-    (enviada pero sin registrar aún su entrega en habitación).
+    "Despachados" son los morrales que ya salieron de planta: DESPACHADA y
+    ENTREGADA. COMPLETADA quedó fuera al reponerse el despacho como estado
+    propio — un morral cerrado sobre el andén todavía no viaja, y contarlo como
+    despachado era exactamente lo que hacía este contador cuando el concepto no
+    tenía estado. "Pendiente de entrega" es DESPACHADA a secas: viajó pero aún
+    no se registra su entrega en habitación.
     """
     queryset = LaundryOrder.objects.all()
     if date_from is not None:
@@ -839,21 +1205,46 @@ def get_site_counters(date_from: datetime | None = None, date_to: datetime | Non
     if date_to is not None:
         queryset = queryset.filter(received_at__lte=date_to)
 
+    # Todos los contadores van con `distinct`: `clean_received_at_site` obliga a
+    # unir con `site_scans` y esa unión multiplica la fila de una guía con
+    # varios pistoleos, inflando de paso a los demás contadores del mismo
+    # aggregate (por eso `dispatched` no cuadraba con la suma por estado).
     counters = queryset.aggregate(
         dispatched=Count(
-            'id', filter=Q(status__in=[OrderStatus.COMPLETED, OrderStatus.DELIVERED])
+            'id', filter=Q(status__in=[OrderStatus.DISPATCHED, OrderStatus.DELIVERED]), distinct=True
         ),
-        delivered=Count('id', filter=Q(delivered_at__isnull=False)),
+        delivered=Count('id', filter=Q(delivered_at__isnull=False), distinct=True),
         clean_received_at_site=Count(
             'id', filter=Q(site_scans__kind=SiteScan.Kind.CLEAN_IN), distinct=True
         ),
-        pending_delivery=Count('id', filter=Q(status=OrderStatus.COMPLETED)),
+        pending_delivery=Count('id', filter=Q(status=OrderStatus.DISPATCHED), distinct=True),
     )
     counters['by_status'] = {
         row['status']: row['total']
         for row in queryset.values('status').annotate(total=Count('id')).order_by('status')
     }
     return counters
+
+
+def resolve_order_faena_name(order: LaundryOrder) -> str:
+    """Faena de la guía, tal como se imprime en la etiqueta lavable y la boleta.
+
+    Manda la faena configurada en el cliente (`companies.Client.faena`): es la
+    que declara el contrato y existe siempre, incluso en Flujo 2, donde no hay
+    habitación de destino de la que deducirla.
+
+    Si el cliente todavía no la tiene configurada se cae a la faena del
+    campamento al que va el morral, que es el mismo lugar físico visto desde el
+    otro lado. Vacío solo si no hay ni una ni otra.
+
+    Requiere `select_related('company__client__faena', 'delivery_room__camp__faena')`.
+    """
+    client_faena = order.company.client.faena
+    if client_faena is not None:
+        return client_faena.name
+    if order.delivery_room_id:
+        return order.delivery_room.camp.faena.name
+    return ''
 
 
 def build_receipt(order_id: int) -> dict:
@@ -871,6 +1262,11 @@ def build_receipt(order_id: int) -> dict:
         'ticket_number': order.ticket_number,
         'company_name': order.company.name,
         'company_logo_url': build_object_url(order.company.logo_key),
+        # Faena y condición de contratista: la boleta viaja de vuelta con el
+        # morral, así que en faena se lee de un vistazo a quién pertenece la
+        # ropa y si es del mandante o de una contratista.
+        'faena': resolve_order_faena_name(order),
+        'is_contractor': order.company.is_contractor,
         'worker_name': worker.full_name,
         # El comprobante físico trae una casilla de teléfono junto al n° de OT.
         # Casi siempre viene vacía o en "0" (el trabajador no lo anota), pero la
@@ -907,6 +1303,8 @@ def build_garment_labels(order_id: int) -> list[dict]:
     y quien imprime arma el layout físico.
     """
     order = get_order(order_id)
+    faena = resolve_order_faena_name(order)
+    is_contractor = order.company.is_contractor
     labels = []
     for item in order.items.all():
         # Las guías anteriores a las etiquetas por prenda no tienen
@@ -923,6 +1321,11 @@ def build_garment_labels(order_id: int) -> list[dict]:
             'garment_name': item.display_name,
             'worker_name': order.worker.full_name,
             'company_name': order.company.name,
+            # La etiqueta se imprime "FAENA · EMPRESA" y, si la empresa es
+            # contratista, "FAENA · EMPRESA · CONTRATISTA": lo que ubica a la
+            # prenda suelta en la mesa es la faena, no el campamento.
+            'faena': faena,
+            'is_contractor': is_contractor,
             'camp': order.delivery_room.camp.name if order.delivery_room_id else '',
             'quantity': item.quantity,
         })

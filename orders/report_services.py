@@ -24,16 +24,32 @@ OPERATIONS_SUMMARY_TTL = 10
 from orders.models import LaundryOrder, MissingItemResolution, OrderStatus
 
 # Estados de trabajo ACTIVO en planta (WIP real): la guía todavía se está
-# procesando y por tanto puede atascarse. COMPLETADA queda fuera a propósito:
-# significa "producida y despachada" (ya salió de planta), no trabajo pendiente.
-# Incluirla inflaba el WIP con las ~210k guías históricas ya terminadas — el bug
-# que hacía ver 210k "en proceso" y "atascadas". La entrega (COMPLETADA ->
-# ENTREGADA) se registra aparte y hoy casi no se puebla, así que tampoco cuenta
-# como atasco de planta.
+# procesando y por tanto puede atascarse. COMPLETADA entró aquí al reponerse
+# DESPACHADA como estado propio: ahora significa "morral cerrado, esperando
+# despacho en el andén", que sí es trabajo pendiente y sí se puede atascar.
+# Antes quedaba fuera porque significaba "producida y despachada" e incluirla
+# inflaba el WIP con las ~210k guías históricas — ese archivo ya no estorba,
+# la migración 0014 lo movió a DESPACHADA, que sigue fuera del WIP igual que
+# ENTREGADA: una vez que el morral salió de planta no se atasca en ella.
 IN_PLANT_STATUSES = (
     OrderStatus.RECEIVED,
     OrderStatus.QUALITY_CHECK,
     OrderStatus.INCOMPLETE,
+    OrderStatus.COMPLETED,
+)
+
+# Una incidencia de faltante sigue ABIERTA mientras la prenda no se resuelva.
+# Replica `_is_resolving_missing` de services.py, que es quien decide si un
+# pistoleo todavía puede resolverla: INCOMPLETA lo está siempre, y DESPACHADA
+# solo si el morral salió con el faltante a bordo y sigue sin saldarse.
+#
+# INCOMPLETA no se filtra por `incomplete_at`/`packed_at` a propósito: el
+# legado dejó `incomplete_at` nulo en la mayoría de esas guías, y exigirlo
+# vaciaba el contador de incidencias abiertas. El corte por `packed_at` solo
+# hace falta en DESPACHADA, donde el estado ya no distingue una guía que salió
+# completa de una que salió con un faltante.
+OPEN_INCIDENT_Q = Q(status=OrderStatus.INCOMPLETE) | Q(
+    status=OrderStatus.DISPATCHED, incomplete_at__isnull=False, packed_at__isnull=True
 )
 
 # Turnaround objetivo (días recepción -> producción): la meta de servicio contra
@@ -51,6 +67,9 @@ STALL_THRESHOLDS_H = {
     OrderStatus.RECEIVED: 72,
     OrderStatus.QUALITY_CHECK: 48,
     OrderStatus.INCOMPLETE: 48,
+    # El morral cerrado ya no requiere trabajo, solo que alguien lo pistolee al
+    # cargarlo: si lleva más de un día en el andén, se quedó atrás.
+    OrderStatus.COMPLETED: 24,
 }
 
 # Timestamp de entrada a cada estado de planta. No existe un `en_revision_at`,
@@ -60,6 +79,7 @@ STALL_TIMESTAMP = {
     OrderStatus.RECEIVED: 'received_at',
     OrderStatus.QUALITY_CHECK: 'updated_at',
     OrderStatus.INCOMPLETE: 'incomplete_at',
+    OrderStatus.COMPLETED: 'completed_at',
 }
 
 
@@ -78,9 +98,10 @@ def apply_filters(
 
     `client_id` agrega todas las empresas del cliente; `company_id` baja a una
     empresa concreta (en el caso cliente=empresa 1:1 dan lo mismo). La faena no se
-    filtra: no es una entidad del modelo (solo existe como `SiteScan` y
-    `Company.reference_prefix`). El `delivery_flow` vive en `Company`, así que se
-    filtra por la relación.
+    filtra todavía: existe como `camps.Faena` y desde el desglose cliente → faena →
+    contratistas se puede alcanzar por `company__client__faena`, pero la
+    reportería sigue agregando por cliente/empresa. El `delivery_flow` vive en
+    `Company`, así que se filtra por la relación.
     """
     if company_id:
         qs = qs.filter(company_id=company_id)
@@ -109,6 +130,7 @@ def annotate_state_since(qs: QuerySet) -> QuerySet:
             When(status=OrderStatus.RECEIVED, then=F('received_at')),
             When(status=OrderStatus.QUALITY_CHECK, then=Coalesce('updated_at', 'received_at')),
             When(status=OrderStatus.INCOMPLETE, then=Coalesce('incomplete_at', 'received_at')),
+            When(status=OrderStatus.COMPLETED, then=Coalesce('completed_at', 'received_at')),
             default=F('received_at'),
         )
     )
@@ -267,7 +289,9 @@ def _compute_operations_summary(**filters) -> dict:
         'in_plant_by_status': [
             {'status': s, 'count': in_plant_counts.get(s, 0)} for s in IN_PLANT_STATUSES
         ],
-        'open_incomplete': in_plant_counts.get(OrderStatus.INCOMPLETE, 0),
+        'open_incomplete': apply_filters(
+            LaundryOrder.objects.filter(OPEN_INCIDENT_Q), **dim
+        ).count(),
         'stalled_count': stalled,
         'oldest_in_plant_days': round(max(aging_days), 1) if aging_days else 0.0,
         'aging': _bucketize_aging(aging_days),
@@ -278,8 +302,8 @@ def _compute_operations_summary(**filters) -> dict:
 def get_stalled_orders(**filters) -> QuerySet:
     """Guías atascadas en planta para la tabla de excepciones. Paginada en el router.
 
-    Solo trabajo activo (IN_PLANT_STATUSES): una COMPLETADA ya salió de planta, no
-    se "atasca". Así la tabla queda accionable (decenas), no inundada por el
+    Solo trabajo activo (IN_PLANT_STATUSES): una DESPACHADA ya salió de planta,
+    no se "atasca". Así la tabla queda accionable (decenas), no inundada por el
     archivo histórico.
     """
     qs = annotate_state_since(
@@ -297,7 +321,7 @@ def get_timeseries(granularity: str = 'day', **filters) -> dict:
 
     Tres agregaciones sobre columnas de fecha distintas (`received_at`,
     `completed_at`, `delivered_at`) fusionadas por fecha: no se puede en un solo
-    GROUP BY. `produced` (completed_at) es la tasa real de salida de planta y el
+    GROUP BY. `produced` (completed_at) es la tasa real de cierre de morrales y el
     contrapeso natural del ingreso; `delivered` se mantiene aunque hoy casi no se
     puebla (la entrega no se registra operativamente todavía).
     """
@@ -354,7 +378,7 @@ def get_quality_summary(**filters) -> dict:
     # filtros de empresa/trabajador/flujo.
     snapshot_filters = {**filters, 'date_from': None, 'date_to': None}
     open_incomplete = apply_filters(
-        LaundryOrder.objects.filter(status=OrderStatus.INCOMPLETE), **snapshot_filters
+        LaundryOrder.objects.filter(OPEN_INCIDENT_Q), **snapshot_filters
     ).count()
 
     resolutions = MissingItemResolution.objects.filter(order__in=incidents)
@@ -425,7 +449,8 @@ def get_incidents(resolution_type: str | None = None, **filters) -> QuerySet:
     """Tabla detallada de incidencias. Paginada en el router.
 
     `resolution_type`: 'ENCONTRADA' | 'COMPRADA' filtran por el tipo de resolución
-    registrada; 'OPEN' deja solo las que siguen en estado INCOMPLETA.
+    registrada; 'OPEN' deja solo las que siguen con el faltante pendiente
+    (ver `OPEN_INCIDENT_Q`), estén en INCOMPLETA o ya despachadas así.
     """
     incident_filters = {**filters, 'date_field': 'incomplete_at'}
     qs = apply_filters(
@@ -433,7 +458,7 @@ def get_incidents(resolution_type: str | None = None, **filters) -> QuerySet:
     )
 
     if resolution_type == 'OPEN':
-        qs = qs.filter(status=OrderStatus.INCOMPLETE)
+        qs = qs.filter(OPEN_INCIDENT_Q)
     elif resolution_type in (
         MissingItemResolution.ResolutionType.FOUND,
         MissingItemResolution.ResolutionType.PURCHASED,

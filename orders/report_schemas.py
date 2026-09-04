@@ -45,9 +45,9 @@ class OperationsSummaryOut(Schema):
     tat_on_target_pct: float              # % producidas dentro de la meta
 
     # Foto de planta AHORA (snapshot, sin ventana de fecha)
-    in_plant: int                         # WIP activo (RECIBIDA + EN_REVISION + INCOMPLETA)
+    in_plant: int                         # WIP activo (RECIBIDA + EN_REVISION + INCOMPLETA + COMPLETA)
     in_plant_by_status: list[StatusCount]
-    open_incomplete: int                  # guías en estado INCOMPLETA ahora
+    open_incomplete: int                  # guías con un faltante pendiente ahora (incl. ya despachadas)
     stalled_count: int                    # WIP sobre su umbral de tiempo en estado
     oldest_in_plant_days: float           # antigüedad de la guía más vieja en planta
     aging: list[AgingBucket]              # WIP repartido por tramos de antigüedad
@@ -155,7 +155,11 @@ class IncidentResolutionOut(Schema):
 
     @staticmethod
     def resolve_item_name(obj) -> str:
-        return obj.item.display_name
+        # `item` es null en el empaque por unidad: el adhesivo identifica una
+        # prenda física, no un tipo, así que no hay línea de la guía a la que
+        # imputar la resolución. Se muestra el código de la unidad, que es lo
+        # único que la identifica (ver `orders.models.MissingItemResolution`).
+        return obj.item.display_name if obj.item_id else (obj.note or 'Prenda del morral')
 
 
 class IncidentOut(Schema):
@@ -189,7 +193,9 @@ class IncidentOut(Schema):
 
     @staticmethod
     def resolve_age_hours(obj) -> float | None:
-        # Solo tiene sentido mientras la incidencia sigue abierta (INCOMPLETA).
-        if obj.status != 'INCOMPLETA' or obj.incomplete_at is None:
+        # Solo tiene sentido mientras la incidencia sigue abierta. Se mide por
+        # `packed_at` y no por el estado, porque el morral puede despacharse
+        # con el faltante a bordo (ver OPEN_INCIDENT_Q en report_services).
+        if obj.incomplete_at is None or obj.packed_at is not None:
             return None
         return round((timezone.now() - obj.incomplete_at).total_seconds() / 3600, 1)

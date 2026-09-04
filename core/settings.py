@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'garments',
     'orders',
     'hospitality',
+    'weighing',
 ]
 
 MIDDLEWARE = [

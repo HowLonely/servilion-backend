@@ -394,15 +394,20 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 
 ### 5.3 `OrderStatus` (`orders_laundryorder.status`, historial)
 
-`EN_LAVADO`, `DESPACHADA` y `COBRADA` nunca llegaron a implementarse como estados propios o se retiraron del flujo (ver `orders/models.py::OrderStatus` y FLUJO_NEGOCIO.md §6/§10). El enum vigente es:
+`EN_LAVADO` y `COBRADA` nunca llegaron a implementarse como estados propios o se retiraron del flujo. `DESPACHADA` sí existe: se había eliminado por no tener ningún pistoleo detrás y volvió al separarse el CIERRE del morral de su DESPACHO — son el segundo y el tercer disparo de la boleta sobre el mismo morral (ver `orders/models.py::OrderStatus` y FLUJO_NEGOCIO.md §4 pasos 6–7, §6/§10). El enum vigente es:
 
 | Valor DB | Etiqueta | Timestamp auto |
 |---|---|---|
 | `RECIBIDA` | Recibida | — (estado inicial) |
 | `EN_REVISION` | En revisión | setea `reviewed_by` |
-| `INCOMPLETA` | Incompleta | `incomplete_at` |
-| `COMPLETADA` | Completada | `completed_at` — terminal en Flujo 2 |
+| `INCOMPLETA` | Incompleta | `incomplete_at` — morral cerrado con faltante, aún en planta |
+| `COMPLETADA` | Completa | `completed_at` — morral cerrado completo, aún en planta |
+| `DESPACHADA` | Despachada | `dispatched_at`, setea `dispatched_by` — terminal en Flujo 2 |
 | `ENTREGADA` | Entregada | `delivered_at`, setea `delivered_by` — terminal en Flujo 1 |
+
+`INCOMPLETA`/`COMPLETADA` describen **con qué** quedó el morral; `DESPACHADA`, **dónde** está. Por eso el despacho no se duplica en dos estados: una guía despachada con un faltante a bordo conserva `incomplete_at` y sus resoluciones pendientes, que es donde se lee su completitud.
+
+El despacho además es **repetible** y solo el primero mueve el estado. La prenda que aparece después del despacho viaja en su propio envío, que se registra en `MissingItemResolution.shipped_at` (null = resuelta pero todavía en planta) y no en la guía. Ver `orders.services.dispatch_order`.
 
 #### Transiciones manuales — botón "Marcar como X" (`orders.services.ALLOWED_TRANSITIONS`)
 
@@ -410,11 +415,12 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 RECIBIDA       → (ninguna — la decide el sistema, ver abajo)
 EN_REVISION    → (ninguna — la decide el sistema, ver abajo)
 INCOMPLETA     → (ninguna — la decide el sistema, ver abajo)
-COMPLETADA     → ENTREGADA
+COMPLETADA     → (ninguna — la decide el sistema, ver abajo)
+DESPACHADA     → ENTREGADA
 ENTREGADA      → (ninguna — estado terminal)
 ```
 
-RECIBIDA → EN_REVISION y EN_REVISION/INCOMPLETA → COMPLETADA no son manuales: el sistema las decide solo como efecto de digitalizar la guía (`create_order`), pistolear el empaque (`scan_packed_garment` / `finish_packing`) o resolver una prenda faltante (`resolve_missing_item`) — ver `orders.services._advance_status`.
+RECIBIDA → EN_REVISION, EN_REVISION/INCOMPLETA → COMPLETADA y COMPLETADA/INCOMPLETA → DESPACHADA no son manuales: el sistema las decide solo como efecto de digitalizar la guía (`create_order`), pistolear el empaque (`scan_packed_garment` / `finish_packing`), resolver una prenda faltante (`resolve_missing_item`) o pistolear la boleta de un morral ya cerrado (`dispatch_order`) — ver `orders.services._advance_status`.
 
 Cambios manuales vía API: `PATCH /api/orders/{id}/status` — validados en servicio; violaciones → HTTP 400.
 
@@ -581,11 +587,13 @@ Referencia: `ejemplo_db_penon.mdb` → export JSONL → `python manage.py import
 | Legado | Nuevo |
 |---|---|
 | *(vacío)* | `RECIBIDA` |
-| `COBRADO` | `ENTREGADA` (Flujo 1) / `COMPLETADA` (Flujo 2) — según `Company.delivery_flow`, ver `LEGACY_BILLED_STATUS` |
-| `COMPLETO` | `COMPLETADA` |
+| `COBRADO` | `ENTREGADA` (Flujo 1) / `DESPACHADA` (Flujo 2) — según `Company.delivery_flow`, ver `LEGACY_BILLED_STATUS` |
+| `COMPLETO` | `DESPACHADA` |
 | `CHECK` / `CH3ECK` | `EN_REVISION` |
-| `DESPACHADO` | `COMPLETADA` |
+| `DESPACHADO` | `DESPACHADA` |
 | `INCOMPLETO` | `INCOMPLETA` |
+
+`COMPLETO` no cae en `COMPLETADA` porque ese estado ahora significa "cerrado y todavía en planta", que no es cierto de ninguna fila de Access: es archivo de guías que salieron hace años. La migración `0014_backfill_dispatched_legacy` aplica el mismo criterio a los datos ya importados.
 
 **Import:** Idempotente por claves naturales. `client_uuid` se autogenera (no se usa para deduplicar import).
 

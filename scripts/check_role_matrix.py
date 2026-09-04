@@ -35,6 +35,10 @@ CASES = [
      {'note': ''},
      {'ADMIN', 'SUPERVISOR', 'DIGITADOR_EMPAQUE'}),
 
+    ('Despachar morral', 'post', '/api/orders/999999/dispatch',
+     {'note': ''},
+     {'ADMIN', 'SUPERVISOR', 'DIGITADOR_EMPAQUE'}),
+
     ('Recepción morral limpio', 'post', '/api/orders/999999/clean-reception',
      {'note': ''},
      {'ADMIN', 'SUPERVISOR'}),

@@ -54,21 +54,27 @@ from workers.models import Worker
 # Mapa de estados legados -> nuevos. Las llaves están normalizadas (upper/trim).
 STATUS_MAP = {
     "": OrderStatus.RECEIVED,
-    "COMPLETO": OrderStatus.COMPLETED,
+    # COMPLETO y DESPACHADO caen ambos en DESPACHADA. En el modelo nuevo
+    # COMPLETADA significa "morral cerrado, todavía en el andén" (ver
+    # OrderStatus), y eso no es cierto de ninguna fila de Access: es archivo de
+    # guías que salieron de planta hace años. La distinción original tampoco se
+    # puede honrar hacia atrás — la migración 0003 ya aplanó DESPACHADO sobre
+    # COMPLETADA sin dejar registro — así que un re-import debe coincidir con lo
+    # que dejó el backfill de la 0014.
+    "COMPLETO": OrderStatus.DISPATCHED,
     "CHECK": OrderStatus.QUALITY_CHECK,
     "CH3ECK": OrderStatus.QUALITY_CHECK,  # typo real presente en la data
-    # DESPACHADA se eliminó del modelo nuevo (absorbida por COMPLETADA: no había
-    # ningún pistoleo que representara "salió de planta" — ver OrderStatus).
-    "DESPACHADO": OrderStatus.COMPLETED,
+    "DESPACHADO": OrderStatus.DISPATCHED,
     "INCOMPLETO": OrderStatus.INCOMPLETE,
 }
 
 # COBRADO también se eliminó del modelo nuevo (el cobro se retiró del flujo,
 # ver OrderStatus): una guía legado marcada COBRADO ya pasó por su último hito
 # real, así que se resuelve como si lo hubiera alcanzado sin cobrarse —
-# ENTREGADA en Flujo 1, COMPLETADA en Flujo 2 (ese cliente nunca registra
-# entrega individual). Se maneja aparte de STATUS_MAP porque depende de la
-# empresa de la fila, no solo del texto de `status`.
+# ENTREGADA en Flujo 1, DESPACHADA en Flujo 2 (ese cliente nunca registra
+# entrega individual, así que el despacho es su hito terminal). Se maneja
+# aparte de STATUS_MAP porque depende de la empresa de la fila, no solo del
+# texto de `status`.
 LEGACY_BILLED_STATUS = "COBRADO"
 
 FALLBACK_COMPANY = "SIN EMPRESA (LEGADO)"
@@ -248,7 +254,17 @@ class Command(BaseCommand):
                 client_id = Client.objects.create(name=name, is_single_company=True).pk
                 existing_clients[key] = client_id
             bt = billing.get(cobro_by_norm.get(key), Company.BillingType.PER_GARMENT)
-            to_create.append(Company(name=name, client_id=client_id, billing_type=bt))
+            # Cliente 1:1: la empresa ES el cliente, así que entra como mandante.
+            # Reagruparlas como contratistas de un cliente compartido (ej. las de
+            # Peñón) es una decisión de negocio que se toma desde el panel.
+            to_create.append(
+                Company(
+                    name=name,
+                    client_id=client_id,
+                    billing_type=bt,
+                    client_role=Company.ClientRole.PRINCIPAL,
+                )
+            )
         Company.objects.bulk_create(to_create, batch_size=self.batch_size)
 
         self.company_by_norm = {norm(n): pk for pk, n in Company.objects.values_list("id", "name")}
@@ -416,7 +432,7 @@ class Command(BaseCommand):
         raw_status = norm(row.get("status"))
         if raw_status == LEGACY_BILLED_STATUS:
             is_flow2 = self.company_delivery_flow.get(company_id) == Company.DeliveryFlow.CLIENT_ONLY
-            status = OrderStatus.COMPLETED if is_flow2 else OrderStatus.DELIVERED
+            status = OrderStatus.DISPATCHED if is_flow2 else OrderStatus.DELIVERED
         else:
             status = STATUS_MAP.get(raw_status, OrderStatus.RECEIVED)
         received = to_aware(row.get("recepcion")) or to_aware(row.get("rlavanderia")) or to_aware(row.get("entrega"))
