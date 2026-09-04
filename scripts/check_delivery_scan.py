@@ -13,7 +13,7 @@ from django.utils import timezone
 from authentication.models import User
 from authentication.services import issue_tokens
 from companies.models import Client, Company
-from camps.models import Camp, Room
+from camps.models import Camp, Faena, Room
 from garments.models import GarmentType
 from orders.models import LaundryOrder, OrderStatus, SiteScan
 from workers.models import Worker
@@ -39,7 +39,8 @@ def run() -> bool:
     empresa = Company.objects.create(
         client=cliente, name='__EMP_TEST', delivery_flow=Company.DeliveryFlow.WITH_ROOM_DELIVERY
     )
-    campamento = Camp.objects.create(client=cliente, name='ALFA')
+    faena = Faena.objects.create(name='__FAENA_TEST')
+    campamento = Camp.objects.create(faena=faena, name='ALFA')
     pieza_ok = Room.objects.create(camp=campamento, number='101')
     pieza_otra = Room.objects.create(camp=campamento, number='202')
     GarmentType.objects.get_or_create(code='__T1', defaults={'name': 'Test'})
@@ -51,8 +52,9 @@ def run() -> bool:
     def nueva_guia(ref: str) -> LaundryOrder:
         order = LaundryOrder.objects.create(
             order_number=ref, worker=trabajador, company=empresa,
-            status=OrderStatus.COMPLETED, received_at=timezone.now(),
-            completed_at=timezone.now(), reference=ref, delivery_room=pieza_ok,
+            status=OrderStatus.DISPATCHED, received_at=timezone.now(),
+            completed_at=timezone.now(), dispatched_at=timezone.now(),
+            reference=ref, delivery_room=pieza_ok,
         )
         # `register_delivery` exige que el morral ya haya llegado a faena.
         SiteScan.objects.create(
@@ -81,7 +83,7 @@ def run() -> bool:
     r = post({'order_code': '__OT2', 'room_qr': str(pieza_otra.qr_code)})
     g2.refresh_from_db()
     ok &= check('Pieza equivocada responde 409', r.status_code == 409, str(r.status_code))
-    ok &= check('Guía NO cambió de estado', g2.status == OrderStatus.COMPLETED, g2.status)
+    ok &= check('Guía NO cambió de estado', g2.status == OrderStatus.DISPATCHED, g2.status)
     ok &= check('409 informa ambas piezas',
                 r.json().get('expected_room', {}).get('number') == '101'
                 and r.json().get('scanned_room', {}).get('number') == '202')
@@ -119,8 +121,9 @@ def run() -> bool:
     )
     w2 = Worker.objects.create(company=empresa2, badge_code='__W2', full_name='F2', current_room=pieza_ok)
     g4 = LaundryOrder.objects.create(
-        order_number='__OT4', worker=w2, company=empresa2, status=OrderStatus.COMPLETED,
-        received_at=timezone.now(), reference='__OT4', delivery_room=pieza_ok,
+        order_number='__OT4', worker=w2, company=empresa2, status=OrderStatus.DISPATCHED,
+        received_at=timezone.now(), dispatched_at=timezone.now(), reference='__OT4',
+        delivery_room=pieza_ok,
     )
     SiteScan.objects.create(
         kind=SiteScan.Kind.CLEAN_IN, scanned_code='__OT4', order=g4, scanned_at=timezone.now()

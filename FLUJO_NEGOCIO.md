@@ -12,9 +12,11 @@ Este documento describe el **flujo operativo real** del negocio. La versión ant
 | Actor | Qué es | Modelo en el backend |
 |---|---|---|
 | **Servilion** | La empresa que opera la lavandería (dueña de este sistema). | — (implícito) |
-| **Empresa contratista/mandante** | Cliente de Servilion. Tiene trabajadores en la faena cuya ropa se lava. Ej: SODEXO PEÑÓN, METSO OUTOTEC, ORICA, MASTER DRILLING. | `companies.Company` |
+| **Cliente** | A quién se le factura. Agrupa a todas las empresas que operan en una misma faena: la del propio cliente y sus contratistas. Ej: PANAM PEÑÓN, que opera en la faena Peñón. | `companies.Client` (con `faena`) |
+| **Empresa contratista/mandante** | Empresa cuyos trabajadores usan el servicio; hereda la faena de su cliente. `client_role` distingue la empresa del propio cliente (`MANDANTE`, se le lava directo) de las contratistas (`CONTRATISTA`), que llevan la palabra "Contratista" impresa en la etiqueta lavable y en la boleta. Ej: SODEXO PEÑÓN, METSO OUTOTEC, ORICA, MASTER DRILLING. | `companies.Company` |
 | **Trabajador** | Empleado de una empresa contratista. Entrega y recibe su ropa en un **morral**. Vive en un campamento/módulo de la faena. **No es usuario del sistema.** | `workers.Worker` |
 | **Supervisor Servilion en faena** | Recibe los morrales sucios del trabajador, coordina el traslado a Antofagasta y, al regreso, verifica la recepción de ropa limpia. | `authentication.User` (rol `SUPERVISOR`) |
+| **Operador de báscula (Antofagasta)** | Recibe el camión, pesa el morral sucio, cuenta sus prendas e imprime las etiquetas. Es puesto propio y no una variante del digitador: es otra estación física y la opera otra persona. | `authentication.User` (rol `PESAJE`) |
 | **Operador en faena (app PEÑON)** | Pistolea recepciones y entregas en campamento. Pantalla con contadores de entregados/despachados. | App de faena → sync con backend |
 | **Staff de lavandería (Antofagasta)** | Digitaliza la OT, pistolea prendas, revisa, pesa, empaqueta y valida el morral antes del despacho. | `authentication.User` (roles `DIGITADOR_OT`, `DIGITADOR_EMPAQUE`, `SUPERVISOR`, `ADMIN`) |
 | **Repartidor en faena (app Android)** | Entrega el morral limpio al trabajador en su habitación escaneando QR. Opera offline. | App móvil → sync con backend |
@@ -151,20 +153,36 @@ El supervisor de Servilion en faena recibe los morrales y gestiona su llegada a 
 
 - Este traslado **no tiene lógica en el sistema** — es logística física pura.
 
-### Paso 4 — Digitalización en Antofagasta
+### Paso 4a — Pesaje y etiquetado en la báscula de recepción
 
-Al llegar los morrales a Antofagasta, el staff **digitaliza la guía en el sistema**:
+Es **lo primero** que le pasa al morral al llegar a Antofagasta, antes de digitalizar nada. Lo opera quien recibe el camión (rol `PESAJE`), en una estación física propia: una balanza, una pantalla táctil y una etiquetera.
 
-1. Ingresa la OT que viene en el documento físico (`digitadopor`).
-2. **Pistoléa prenda por prenda**, corroborando que coinciden con lo declarado en la OT física.
-3. Si falta o sobra algo, registra `observacion`.
-4. El sistema genera automáticamente el `ref` (inicial de faena/empresa + número que **se resetea a 1000 cada semana** e incrementa).
-5. Se imprimen etiquetas lavables con el `ref` y se pegan en cada prenda.
-6. Se pesa el morral completo (`peso`) — no prenda por prenda.
-7. Se actualiza `rlavanderia` al pistoleo de recepción en lavandería.
-8. Un revisor registra su identidad (`revisadopor`).
+1. Se elige el **cliente** (a quién se le factura) y la **empresa** (de quién es la ropa, mandante o contratista).
+2. Se cuenta cuántas prendas trae el morral.
+3. Se pesa el morral completo — no prenda por prenda, y sin descontar tara.
+4. El sistema genera el **`ref`** (prefijo del cliente + correlativo de 1000 a 1999 + letra de ciclo).
+5. Se imprime **un adhesivo lavable por prenda** (`P1375A-01`, `P1375A-02`…) y se pega uno en cada prenda, más un **ticket maestro** que viaja dentro del morral hasta la mesa de digitación.
+
+> **El `ref` nace aquí y no al digitalizar.** Es lo que va impreso en los adhesivos que ya están pegados a la ropa: el identificador que viaja con la prenda tiene que ser el mismo que usa el resto del flujo. La contrapartida asumida es que un pesaje anulado quema su correlativo.
+
+> **En la báscula todavía no se sabe quién es el trabajador**: eso viene escrito en la OT física. Por eso el pesaje es un registro propio (`weighing.WeighIn`) y no una guía a medio llenar. Un morral puede además pesarse y no digitalizarse nunca; el kilo igual entró a la planta y queda contado.
 
 Este es el **punto de ingreso a la base de datos** (primer touchpoint del sistema de trazabilidad online).
+
+### Paso 4b — Digitalización en Antofagasta
+
+Con el morral ya pesado y etiquetado, el staff **digitaliza la guía**:
+
+1. Tipea el **ref del ticket de pesaje**; la guía hereda ese ref y el peso ya registrados.
+2. Ingresa la OT que viene en el documento físico (`digitadopor`).
+3. Declara el detalle por tipo de prenda, corroborando contra lo escrito en la OT física.
+4. Si falta o sobra algo, registra `observacion`.
+5. Se actualiza `rlavanderia` al ingresar la guía.
+6. Un revisor registra su identidad (`revisadopor`).
+
+Si el conteo real no coincide con el de la báscula, **manda el digitador**: la guía queda con el conteo real y el pesaje conserva el suyo, con la diferencia a la vista.
+
+> **El pesaje previo es opcional.** Un morral que no pasó por la báscula se digitaliza igual, generando su propio ref y sus etiquetas por tipo de prenda. Es la excepción, pero tiene que existir: si el pesaje fuera obligatorio, una etiquetera atascada detendría la planta entera.
 
 ### Paso 5 — Proceso en planta (sin intervención del sistema)
 
@@ -206,14 +224,47 @@ flowchart TD
 
 Al reempacar la ropa limpia en el morral, el operador **pistoléa cada prenda** que carga al morral. El sistema valida que el morral quede **completo** respecto a lo declarado en la guía.
 
+Hay dos modos de validación, y los decide el origen de la guía:
+
+| Modo | Cuándo | Qué se pistolea | Qué dice al faltar algo |
+|---|---|---|---|
+| **Por unidad** | La guía viene de un pesaje | Cada adhesivo (`P1375A-03`), una sola vez | "falta la 05" |
+| **Por tipo** | La guía se digitalizó sin báscula | El código del tipo (`P1375A-TOA`), tantas veces como unidades vuelvan | "faltan 2 poleras" |
+
+El modo por unidad cierra un agujero del esquema anterior: con un solo adhesivo por tipo se podía pistolear cuatro veces la **misma** polera y el sistema daba por vueltas las cuatro. Con una etiqueta por prenda física, el segundo disparo sobre la misma prenda es un duplicado detectable.
+
+En modo unidad el adhesivo no dice qué prenda es, así que el detalle por tipo declarado en la guía se sigue mostrando al lado: es lo que permite deducir qué buscar cuando falta la 05.
+
 - Este es el **segundo touchpoint** del almacenamiento online (verificación de prendas).
 - Al completarse, se genera/imprime la **boleta** con OT, ref, peso, fecha tentativa de entrega, QR y código de control.
 
+La boleta del morral se pistolea tres veces a lo largo del empaque y el despacho, siempre en el mismo terminal y sin elegir modo en pantalla: el sistema deduce qué toca según en qué estado está la guía.
+
+| Disparo | Qué hace | Estado resultante |
+|---|---|---|
+| 1º | Abre el morral | `EN_REVISION` |
+| 2º | **Cierra** el morral: valida lo pistoleado | `COMPLETADA` o `INCOMPLETA` |
+| 3º | **Despacha** el morral: sale de planta | `DESPACHADA` |
+| 4º+ | **Despacha una prenda** que apareció después, en envío aparte | `DESPACHADA` (no cambia) |
+
+Cerrar no es despachar. Entre el 2º y el 3º disparo el morral está cerrado pero sigue en el andén de la planta, y esa espera es medible (aparece en el WIP de la Torre de Control). La etiqueta lavable de una prenda no interviene en esta secuencia: trae separador (`P1005-TOA`) y por eso nunca se confunde con la boleta.
+
 ### Paso 7 — Despacho y traslado a faena
 
-El morral despachado viaja de vuelta a faena. El contador **DESPACHADOS** de la app PEÑON refleja morrales en tránsito o listos para recepción.
+El operador pistolea la boleta al cargar el morral al camión: ese tercer disparo es el que lo pasa a `DESPACHADA`. El morral viaja de vuelta a faena y el contador **DESPACHADOS** de la app PEÑON refleja morrales en tránsito o listos para recepción.
+
+Un morral **incompleto también se despacha**: la operación no retiene el envío esperando una prenda. Sale con el faltante anotado, y si la prenda aparece después se resuelve igual pistoleándola —la guía conserva `incomplete_at` y sus resoluciones pendientes.
+
+Esa prenda tiene entonces que viajar sola, y casi nunca alcanza el mismo camión. **El despacho es repetible** por eso: una vez resuelta, se pistolea otra vez la boleta al cargar la prenda y ese disparo la despacha en su propio envío. No mueve el estado —la guía ya está `DESPACHADA` y no volvió a planta—; lo que registra es `MissingItemResolution.shipped_at`, atando el envío a *qué prenda* viaja. Es la contraparte exacta de que el paso 8 sea repetible: cada envío tiene su llegada.
+
+| Envío | Qué sale | Qué lo registra |
+|---|---|---|
+| 1º | El morral (completo o con el faltante anotado) | `LaundryOrder.dispatched_at` + estado `DESPACHADA` |
+| 2º+ | La prenda encontrada o la comprada para reponerla | `MissingItemResolution.shipped_at` |
 
 ### Paso 8 — Recepción del morral limpio en faena
+
+Es **repetible**, y ahora empareja uno a uno con los envíos del paso 7: la llegada del morral primero y, si hubo prenda rezagada, la de su envío aparte después.
 
 El supervisor de Servilion en faena:
 
@@ -234,7 +285,7 @@ Aquí entra la **app Android** de reparto:
 
 ### Paso 10 — Cobro (fuera de alcance del sistema)
 
-La guía se factura a la empresa contratista, pero esto ocurre fuera del sistema: no existe un estado `COBRADA` ni un reporte de facturación — se retiraron del flujo (ver §6 y §9). `ENTREGADA` (Flujo 1) y `COMPLETADA` (Flujo 2) son los estados terminales de la guía.
+La guía se factura a la empresa contratista, pero esto ocurre fuera del sistema: no existe un estado `COBRADA` ni un reporte de facturación — se retiraron del flujo (ver §6 y §9). `ENTREGADA` (Flujo 1) y `DESPACHADA` (Flujo 2) son los estados terminales de la guía.
 
 ---
 
@@ -260,16 +311,16 @@ Los estados del backend deben alinearse con el flujo real. Mapeo propuesto respe
 | `RECIBIDA` | Guía digitalizada en Antofagasta (paso 4) |
 | `EN_LAVADO` | Morral en proceso de planta (paso 5) |
 | `EN_REVISION` | Revisión post-lavado / pre-empaque |
-| `INCOMPLETA` | Discrepancia en conteo (observación registrada) |
-| `COMPLETADA` | Morral empaquetado y validado por pistoleo (paso 6) |
-| `DESPACHADA` | Morral en tránsito o recibido en faena (pasos 7–8) |
+| `INCOMPLETA` | Morral cerrado con una discrepancia en el conteo, aún en planta (paso 6) |
+| `COMPLETADA` | Morral cerrado completo por pistoleo, aún en planta (paso 6) |
+| `DESPACHADA` | Morral cargado y en tránsito a faena (paso 7) — estado terminal en Flujo 2 |
 | `ENTREGADA` | Entrega confirmada en habitación vía app (paso 9) — estado terminal en Flujo 1 |
 
 Cada cambio de estado queda auditado en `OrderStatusHistory`. El sistema legado solo guardaba el estado final.
 
 > **Nota:** Los timestamps `recepcion` (faena, paso 2) y `rlavanderia` (Antofagasta, paso 4) son eventos **anteriores** al estado `RECIBIDA` del backend actual. Conviene modelarlos como timestamps independientes, no como estados.
 
-> **Nota:** esta tabla es el mapeo *propuesto* original y ya quedó desalineada del enum real — `EN_LAVADO` y `DESPACHADA` nunca se implementaron como estados propios (ver comentarios en `orders/models.py::OrderStatus`), y `COBRADA` se implementó pero se retiró del flujo (el cobro pasó a ser un proceso fuera del sistema). El enum vigente es `RECIBIDA`, `EN_REVISION`, `INCOMPLETA`, `COMPLETADA`, `ENTREGADA`.
+> **Nota:** `EN_LAVADO` nunca se implementó como estado propio (el lavado ocurre sin que el sistema lo registre) y `COBRADA` se implementó pero se retiró del flujo (el cobro pasó a ser un proceso fuera del sistema). `DESPACHADA` sí se había eliminado —no existía ningún pistoleo que representara "salió de planta"— y volvió al separarse el cierre del morral de su despacho (paso 7). El enum vigente es `RECIBIDA`, `EN_REVISION`, `INCOMPLETA`, `COMPLETADA`, `DESPACHADA`, `ENTREGADA`.
 
 ---
 
@@ -308,7 +359,7 @@ erDiagram
 | Recepción de ropa limpia en faena | **Cerrada** | `site_clean_received_at` / `site_clean_received_by`, vía `POST /orders/{id}/clean-reception`. Es requisito previo para registrar la entrega. |
 | `entrega` vs. `entregado` | **Cerrada** | `promised_at` se calcula según el turno del trabajador al digitalizar; `delivered_at` se fija al registrar la entrega. |
 | App PEÑON (faena) vs. app Android (entrega) | **Parcial** | El backend recibe ambos flujos (`POST /orders/scan/site-reception` y `POST /orders/sync`) y expone los contadores en `GET /orders/counters`. Las apps móviles siguen pendientes. |
-| Flujo 2 (sin seguimiento de entrega) | **Cerrada** | `Company.delivery_flow`; en FLUJO_2 la guía llega a `COMPLETADA` y ahí queda (estado terminal), y el endpoint de entrega la rechaza. |
+| Flujo 2 (sin seguimiento de entrega) | **Cerrada** | `Company.delivery_flow`; en FLUJO_2 la guía llega a `DESPACHADA` y ahí queda (estado terminal), y el endpoint de entrega la rechaza. |
 | `ref` con reset semanal | **Cerrada** | `ReferenceCounter` por (prefijo, año ISO, semana ISO), reseteo a 1000 y generación serializada. El prefijo sale de `Company.reference_prefix`. |
 | Validación por pistoleo en empaque | **Cerrada** | `OrderItem.scanned_quantity` + `POST /orders/{id}/packing/scan` y `/packing/finish`: completa la guía o la marca `INCOMPLETA` con la discrepancia. |
 | Prendas fuera de catálogo | **Cerrada** | `OrderItem.garment_type` es opcional y admite `custom_name`, como la OT física escrita a mano. |

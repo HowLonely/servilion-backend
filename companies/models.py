@@ -10,6 +10,12 @@ class Client(TimeStampedModel):
     nivel (ver `ClientGarmentPrice` y `orders.LaundryOrder.billed_amount`): todas
     las empresas del cliente se cobran con el mismo catálogo.
 
+    El desglose real del negocio es cliente → faena → contratistas: el cliente
+    "Panam Peñón" opera en la faena "Peñón", se le lava directo a él (su empresa
+    mandante) y también a las contratistas que trabajan en esa misma faena. Por
+    eso la faena se configura acá y cada empresa declara en `Company.client_role`
+    si es la del cliente o una contratista.
+
     Hay dos casos que se modelan igual, con un solo camino de código:
     - El cliente agrupa varias empresas (ej. una faena/mandante con varios
       contratistas).
@@ -21,6 +27,24 @@ class Client(TimeStampedModel):
 
     name = models.CharField(max_length=100, unique=True)
     tax_id = models.CharField('RUT cliente', max_length=15, blank=True)
+    # Faena donde opera este cliente (ej. el cliente "Panam Peñón" opera en la
+    # faena "Peñón"). Vive aquí y no en `Company` porque el desglose real del
+    # negocio es cliente → faena → contratistas: todas las empresas del cliente
+    # trabajan en la misma faena y la heredan, así que configurarla una vez
+    # alcanza. Es lo que se imprime en la etiqueta lavable y en la boleta.
+    #
+    # Null porque la faena es opcional: `camps.Faena` sigue siendo el sitio
+    # físico dueño de los campamentos y no depende de que exista un cliente
+    # configurado. Cuando el cliente no la tiene, la guía cae a la faena del
+    # campamento de destino (ver `orders.services.resolve_order_faena_name`).
+    faena = models.ForeignKey(
+        'camps.Faena',
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='clients',
+        verbose_name='Faena',
+    )
     # Inicial del cliente que antecede al correlativo del `ref` (la "P" de
     # P1375A). Vive aquí y no en `Company` porque el ref identifica a quién se
     # le factura la guía: todas las contratistas de un mismo cliente comparten
@@ -55,6 +79,23 @@ class Company(TimeStampedModel):
     Siempre pertenece a un `Client`. El precio ya no vive aquí ni en el catálogo
     global de prendas: se define por cliente en `ClientGarmentPrice`.
     """
+
+    class ClientRole(models.TextChoices):
+        """Qué es esta empresa dentro de su cliente.
+
+        PRINCIPAL es la empresa del propio cliente: la ropa se le lava directo
+        (ej. "Panam Peñón" dentro del cliente "Panam Peñón"). CONTRATISTA es una
+        empresa que trabaja para ese cliente en la misma faena (ej. Sodexo,
+        Metso, Orica en Peñón); se le factura al mismo cliente y comparte su
+        catálogo de precios, pero la ropa no es del mandante.
+
+        La distinción es visible en el terreno: la etiqueta lavable y la boleta
+        imprimen la palabra "Contratista" para que en la mesa de empaque y en
+        faena se sepa de un vistazo que ese morral no es del mandante.
+        """
+
+        PRINCIPAL = 'MANDANTE', 'Mandante (se lava directo al cliente)'
+        CONTRACTOR = 'CONTRATISTA', 'Contratista'
 
     class BillingType(models.TextChoices):
         PER_GARMENT = 'PRENDAS', 'Por prenda'
@@ -91,6 +132,12 @@ class Company(TimeStampedModel):
     client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name='companies')
     name = models.CharField(max_length=100, unique=True)
     tax_id = models.CharField('RUT empresa', max_length=15, blank=True)
+    # Por defecto CONTRATISTA: agregar una empresa a un cliente que ya existe es
+    # casi siempre sumar una contratista. El caso mandante lo fija el formulario
+    # (o `services.create_company` cuando crea el cliente 1:1 junto a la empresa).
+    client_role = models.CharField(
+        'Tipo', max_length=12, choices=ClientRole.choices, default=ClientRole.CONTRACTOR
+    )
     billing_type = models.CharField(max_length=10, choices=BillingType.choices, default=BillingType.PER_GARMENT)
     service_type = models.CharField(
         'Tipo de servicio', max_length=10, choices=ServiceType.choices, default=ServiceType.PERSONAL
@@ -111,6 +158,15 @@ class Company(TimeStampedModel):
 
     def __str__(self) -> str:
         return self.name
+
+    @property
+    def is_contractor(self) -> bool:
+        return self.client_role == self.ClientRole.CONTRACTOR
+
+    @property
+    def faena_name(self) -> str:
+        """Faena heredada del cliente. Requiere `select_related('client__faena')`."""
+        return self.client.faena.name if self.client.faena_id else ''
 
 
 class ClientGarmentPrice(TimeStampedModel):

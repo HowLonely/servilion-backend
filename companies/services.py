@@ -3,16 +3,24 @@ from decimal import Decimal
 from django.db import transaction
 from django.db.models import Count, QuerySet
 
+from camps.models import Faena
 from companies.models import Client, ClientGarmentPrice, Company
 from companies.schemas import ClientIn, ClientPriceIn, CompanyIn
 from common.services import build_presigned_upload
 from garments.models import GarmentType
 
 
+def _validate_faena(faena_id: int | None) -> None:
+    """Falla con 404 si la faena no existe, en vez de un IntegrityError 500."""
+    if faena_id is not None:
+        Faena.objects.get(pk=faena_id)
+
+
 # --- Clientes ---------------------------------------------------------------
 
 def list_clients(search: str | None = None, is_active: bool | None = None) -> QuerySet[Client]:
-    queryset = Client.objects.annotate(company_count=Count('companies'))
+    # `select_related('faena')` evita un N+1 al resolver `faena_name` por fila.
+    queryset = Client.objects.select_related('faena').annotate(company_count=Count('companies'))
     if search:
         queryset = queryset.filter(name__icontains=search)
     if is_active is not None:
@@ -23,10 +31,11 @@ def list_clients(search: str | None = None, is_active: bool | None = None) -> Qu
 
 
 def get_client(client_id: int) -> Client:
-    return Client.objects.annotate(company_count=Count('companies')).get(pk=client_id)
+    return Client.objects.select_related('faena').annotate(company_count=Count('companies')).get(pk=client_id)
 
 
 def create_client(payload: ClientIn) -> Client:
+    _validate_faena(payload.faena_id)
     client = Client.objects.create(**payload.dict())
     # El ClientOut necesita company_count; recién creado no tiene empresas.
     client.company_count = 0
@@ -34,6 +43,7 @@ def create_client(payload: ClientIn) -> Client:
 
 
 def update_client(client_id: int, payload: ClientIn) -> Client:
+    _validate_faena(payload.faena_id)
     client = Client.objects.get(pk=client_id)
     for field, value in payload.dict().items():
         setattr(client, field, value)
@@ -124,7 +134,7 @@ def get_client_price_map(client_id: int) -> dict[int, Decimal]:
 def list_companies(
     search: str | None = None, is_active: bool | None = None, client_id: int | None = None
 ) -> QuerySet[Company]:
-    queryset = Company.objects.select_related('client')
+    queryset = Company.objects.select_related('client', 'client__faena')
     if search:
         queryset = queryset.filter(name__icontains=search)
     if is_active is not None:
@@ -137,7 +147,7 @@ def list_companies(
 
 
 def get_company(company_id: int) -> Company:
-    return Company.objects.select_related('client').get(pk=company_id)
+    return Company.objects.select_related('client', 'client__faena').get(pk=company_id)
 
 
 @transaction.atomic
@@ -149,9 +159,15 @@ def create_company(payload: CompanyIn) -> Company:
     """
     data = payload.dict()
     client_id = data.pop('client_id', None)
+    # `faena_id` solo aplica al cliente que se crea acá: si la empresa entra a un
+    # cliente existente, la faena es la que ese cliente ya tiene configurada.
+    faena_id = data.pop('faena_id', None)
     if client_id is None:
-        client = Client.objects.create(name=data['name'], is_single_company=True)
+        _validate_faena(faena_id)
+        client = Client.objects.create(name=data['name'], is_single_company=True, faena_id=faena_id)
         client_id = client.pk
+        # La empresa que nace junto a su cliente ES el cliente, no una contratista.
+        data['client_role'] = Company.ClientRole.PRINCIPAL
     company = Company.objects.create(client_id=client_id, **data)
     return get_company(company.pk)
 
@@ -161,6 +177,8 @@ def update_company(company_id: int, payload: CompanyIn) -> Company:
     company = Company.objects.select_related('client').get(pk=company_id)
     data = payload.dict()
     client_id = data.pop('client_id', None)
+    # La faena se edita en la ficha del cliente; acá solo servía para crearlo.
+    data.pop('faena_id', None)
     if client_id is not None and client_id != company.client_id:
         company.client_id = client_id
         # Al mover una empresa a un cliente compartido este deja de ser 1:1.

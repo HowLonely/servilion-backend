@@ -42,6 +42,11 @@ class OrderItemOut(Schema):
 class LaundryOrderIn(Schema):
     order_number: str
     worker_id: int
+    # Pesaje que origina esta guía (`weighing.WeighIn`). Cuando viene, la guía
+    # hereda su `ref` —los adhesivos ya están pegados a la ropa con ese código—
+    # y su peso. Null es el camino de excepción: morral que nunca pasó por la
+    # báscula (caída del equipo, morral traspapelado, transición).
+    weigh_in_id: int | None = None
     ticket_number: str = ''
     shift: str = ''
     weight_kg: float | None = None
@@ -68,7 +73,9 @@ class CleanReceptionOut(Schema):
 
 
 class MissingItemResolutionOut(Schema):
-    item_id: int
+    # Null cuando la guía se empaca por unidad: la prenda que reapareció se
+    # identifica por su adhesivo, no por la línea de la guía (ver el modelo).
+    item_id: int | None
     item_code: str
     item_name: str
     resolution_type: str
@@ -76,15 +83,22 @@ class MissingItemResolutionOut(Schema):
     purchase_cost: float | None
     resolved_at: datetime
     resolved_by_name: str | None
+    # Null = la prenda se resolvió pero sigue en planta esperando su envío a
+    # faena (el morral ya viajó sin ella). Ver MissingItemResolution.shipped_at.
+    shipped_at: datetime | None
     note: str
 
     @staticmethod
     def resolve_item_code(obj) -> str:
+        if obj.item_id is None:
+            return ''
         return obj.item.garment_type.code if obj.item.garment_type_id else ''
 
     @staticmethod
     def resolve_item_name(obj) -> str:
-        return obj.item.display_name
+        # Sin línea imputada se muestra el código de la unidad, que es lo único
+        # que identifica a la prenda encontrada.
+        return obj.item.display_name if obj.item_id else (obj.note or 'Prenda del morral')
 
     @staticmethod
     def resolve_resolved_by_name(obj) -> str | None:
@@ -115,6 +129,7 @@ class LaundryOrderOut(Schema):
     promised_at: datetime | None
     incomplete_at: datetime | None
     completed_at: datetime | None
+    dispatched_at: datetime | None
     clean_receptions: list[CleanReceptionOut]
     delivered_at: datetime | None
     observations: str
@@ -126,7 +141,24 @@ class LaundryOrderOut(Schema):
     photo_url: str | None
     items: list[OrderItemOut]
     missing_item_resolutions: list[MissingItemResolutionOut]
+    # Pesaje de origen. `weighed_garment_count` es lo que contó la báscula y
+    # puede diferir de `garment_count`: manda el digitador, y la diferencia
+    # queda a la vista en vez de sobrescribirse.
+    weigh_in_id: int | None
+    weighed_garment_count: int | None
     updated_at: datetime
+
+    @staticmethod
+    def resolve_weigh_in_id(obj) -> int | None:
+        # `weigh_in` es el reverso de un OneToOne: no existe cuando la guía se
+        # digitalizó sin pasar por la báscula.
+        weigh_in = getattr(obj, 'weigh_in', None)
+        return weigh_in.id if weigh_in else None
+
+    @staticmethod
+    def resolve_weighed_garment_count(obj) -> int | None:
+        weigh_in = getattr(obj, 'weigh_in', None)
+        return weigh_in.garment_count if weigh_in else None
 
     @staticmethod
     def resolve_worker_name(obj) -> str:
@@ -242,12 +274,25 @@ class PackingItemProgressOut(Schema):
     scanned_quantity: int
 
 
+class PackingUnitProgressOut(Schema):
+    """Una prenda física del morral, identificada por su adhesivo (`P1375A-03`)."""
+
+    sequence: int
+    code: str
+    is_scanned: bool
+
+
 class PackingProgressOut(Schema):
     order_id: int
     declared_total: int
     scanned_total: int
     is_complete: bool
     items: list[PackingItemProgressOut]
+    # Modo de validación del morral. "unidad" cuando la guía viene de un pesaje
+    # y cada prenda lleva adhesivo propio; "tipo" en las guías digitalizadas sin
+    # báscula, que siguen validando por tipo de prenda como siempre.
+    mode: str = 'tipo'
+    units: list[PackingUnitProgressOut] = []
 
 
 class PackingCodeScanIn(Schema):
@@ -258,7 +303,7 @@ class PackingCodeScanIn(Schema):
 
 
 class PackingScanOut(Schema):
-    """Qué hizo el pistoleo: abrió el morral, lo cerró o marcó una prenda."""
+    """Qué hizo el pistoleo: abrió el morral, lo cerró, lo despachó o marcó una prenda."""
 
     action: str
     order: LaundryOrderOut
@@ -294,6 +339,10 @@ class GarmentLabelOut(Schema):
     garment_name: str
     worker_name: str
     company_name: str
+    # `is_contractor` decide si la etiqueta imprime la palabra "Contratista"
+    # junto a la faena y la empresa.
+    faena: str
+    is_contractor: bool
     camp: str
     quantity: int
 
@@ -327,6 +376,8 @@ class ReceiptOut(Schema):
     ticket_number: str
     company_name: str
     company_logo_url: str | None
+    faena: str
+    is_contractor: bool
     worker_name: str
     phone: str
     national_id: str
