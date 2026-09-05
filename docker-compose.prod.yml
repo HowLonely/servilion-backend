@@ -64,6 +64,21 @@ services:
       api:
         condition: service_healthy
 
+  web:
+    build:
+      context: ../servilion-web
+      args:
+        NEXT_PUBLIC_API_URL: https://${API_DOMAIN}
+    restart: unless-stopped
+    environment:
+      DJANGO_API_URL: http://nginx
+      NEXT_PUBLIC_API_URL: https://${API_DOMAIN}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:3000/login"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -79,6 +94,7 @@ services:
       - caddy_config:/config
     depends_on:
       - nginx
+      - web
 
 volumes:
   postgres_data_prod:

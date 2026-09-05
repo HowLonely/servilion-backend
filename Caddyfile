@@ -1,4 +1,9 @@
-{$DEMO_DOMAIN} {
+{$API_DOMAIN} {
     encode zstd gzip
     reverse_proxy nginx:80
+}
+
+{$WEB_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy web:3000
 }
