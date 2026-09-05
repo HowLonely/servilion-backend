@@ -295,9 +295,7 @@ def create_order(payload: LaundryOrderIn, received_by: User) -> LaundryOrder:
         # El ref NO se genera cuando la guía viene de un pesaje: ya está impreso
         # en los adhesivos que andan pegados a la ropa desde la recepción.
         # Emitir uno nuevo dejaría el morral con dos identidades.
-        reference=(
-            weigh_in.reference if weigh_in else (payload.reference or generate_reference(worker.company.client))
-        ),
+        reference=(weigh_in.reference if weigh_in else generate_reference(worker.company.client)),
         control_code=payload.control_code,
         # Congela el destino de la entrega: `worker.current_room` puede
         # cambiar mientras la ropa está en planta, pero este morral se entrega
@@ -394,10 +392,16 @@ def find_order_by_code(code: str) -> LaundryOrder:
     las etiquetas lavables y el código de control de la boleta: las tres capas
     de trazabilidad de FLUJO_NEGOCIO.md §5.
 
-    Solo la OT es única en el tiempo: el `ref` se resetea a 1000 cada semana, así
-    que un mismo código se repite a lo largo del histórico. Por eso se devuelve
-    la coincidencia más reciente, que es la guía que el operador tiene en la
-    mano cuando pistoléa la etiqueta.
+    Se devuelve la coincidencia más reciente porque ninguno de los tres códigos
+    es único a lo largo de todo el histórico: el `ref` de las guías anteriores al
+    ciclo (`ReferenceCounter`) se reiniciaba cada semana, y el número de control
+    viene del sistema legado sin garantía de unicidad. La guía que el operador
+    tiene en la mano es siempre la última.
+
+    Este atajo NO sirve para mover un morral: quien pistolea en la mesa de
+    empaque va por `scan_packing_code`, que restringe a las guías vivas y ante
+    dos candidatas devuelve 409 en vez de elegir por él. Acá se elige la más
+    reciente porque la consulta de faena es de solo lectura.
     """
     code = code.strip()
     order = (
@@ -1165,17 +1169,12 @@ def confirm_clean_reception(order_id: int, user: User, note: str = '') -> Laundr
 
 @transaction.atomic
 def register_delivery(order_id: int, user: User, note: str = '', delivered_at: datetime | None = None) -> LaundryOrder:
-    """Confirma la entrega del morral al trabajador en su habitación.
-
-    Solo aplica al Flujo 1: en el Flujo 2 el morral se entrega al mandante sin
-    trazabilidad individual, así que no hay entrega que registrar.
-    """
+    """Confirma una entrega; la evidencia móvil se agrega en el servicio de escaneo."""
     order = LaundryOrder.objects.select_related('company').get(pk=order_id)
-    if order.company.delivery_flow == Company.DeliveryFlow.CLIENT_ONLY:
-        raise OrderFlowError(
-            f'{order.company.name} opera en Flujo 2 (entrega solo al cliente): no registra entrega en habitación.'
-        )
-    if not order.site_scans.filter(kind=SiteScan.Kind.CLEAN_IN).exists():
+    if (
+        order.company.delivery_flow == Company.DeliveryFlow.WITH_ROOM_DELIVERY
+        and not order.site_scans.filter(kind=SiteScan.Kind.CLEAN_IN).exists()
+    ):
         raise OrderFlowError('El morral aún no fue recibido en faena por el supervisor.')
 
     updated = update_status(order_id, OrderStatus.DELIVERED, user=user, note=note)
@@ -1376,7 +1375,10 @@ def sync_order(data: OrderSyncIn) -> tuple[LaundryOrder, str]:
             promised_at=data.promised_at or calculate_promised_at(shift, data.received_at),
             delivered_at=data.delivered_at,
             observations=data.observations,
-            reference=data.reference,
+            # El dispositivo no propone ref (ver OrderSyncIn): lo emite el
+            # contador al llegar el lote, que es el unico momento en que hay
+            # servidor para bloquearlo.
+            reference=generate_reference(worker.company.client),
             control_code=data.control_code,
         )
         order.garment_count = _build_items(order, data.items)
@@ -1401,7 +1403,10 @@ def sync_order(data: OrderSyncIn) -> tuple[LaundryOrder, str]:
     order.received_at = data.received_at
     order.promised_at = data.promised_at or order.promised_at
     order.observations = data.observations
-    order.reference = data.reference or order.reference
+    # El ref no se toca al sincronizar: se emitio al crear la guia y desde ese
+    # momento viaja impreso en los adhesivos pegados a la ropa. Un dispositivo
+    # que reenvia el lote no puede reescribirlo sin dejar el morral con dos
+    # identidades, una en el papel y otra en la base.
     order.control_code = data.control_code or order.control_code
     if data.delivered_at is not None:
         order.delivered_at = data.delivered_at
@@ -1453,19 +1458,22 @@ class DeliveryRoomMismatch(Exception):
 
 @transaction.atomic
 def confirm_delivery_by_scan(
+    client_uuid: UUID,
     order_code: str,
-    room_qr: UUID,
+    room_qr: UUID | None,
     user: User,
+    latitude: float,
+    longitude: float,
+    accuracy_meters: float,
     note: str = '',
     delivered_at: datetime | None = None,
     confirm_different_room: bool = False,
 ) -> dict:
-    """Registra la entrega del morral validando el QR de la puerta.
+    """Registra una entrega móvil idempotente con evidencia geográfica.
 
-    Es el flujo de la app móvil: se escanea la etiqueta de la OT y luego el QR
-    de la habitación. Reutiliza `register_delivery` para no duplicar las reglas
-    del flujo (Flujo 2, recepción previa en faena, transición de estado); lo que
-    agrega es la verificación de que el morral se dejó donde correspondía.
+    En Flujo 1 valida la puerta y exige confirmación explícita si no coincide.
+    En Flujo 2 no hay puerta: el único escaneo identifica el morral entregado
+    directamente al cliente. `client_uuid` hace seguro todo reintento offline.
 
     Ante una discrepancia lanza `DeliveryRoomMismatch` en vez de entregar a
     ciegas: en faena las piezas se reasignan seguido y dejar la ropa en la
@@ -1473,12 +1481,58 @@ def confirm_delivery_by_scan(
     Si el operador confirma que la pieza real es otra, se registra la entrega
     ahí y la discrepancia queda escrita en la nota del pistoleo.
     """
-    order = find_order_by_code(order_code)
-    room = camps_services.get_room_by_qr(room_qr)
-    expected = order.delivery_room
+    def result_from_scan(scan: SiteScan) -> dict:
+        expected_room = scan.order.delivery_room
+        room_delivery = scan.order.company.delivery_flow == Company.DeliveryFlow.WITH_ROOM_DELIVERY
+        return {
+            'client_uuid': scan.client_uuid,
+            'order': get_order(scan.order_id),
+            'delivery_target': 'HABITACION' if room_delivery else 'CLIENTE',
+            'scanned_room': scan.room,
+            'expected_room': expected_room if room_delivery else None,
+            'room_matched': (
+                expected_room is not None and expected_room.id == scan.room_id
+                if room_delivery else None
+            ),
+            'latitude': scan.latitude,
+            'longitude': scan.longitude,
+            'accuracy_meters': scan.accuracy_meters,
+            'delivered_at': scan.scanned_at,
+        }
 
-    room_matched = expected is not None and expected.id == room.id
-    if not room_matched and not confirm_different_room:
+    existing = (
+        SiteScan.objects.select_related(
+            'order', 'order__company', 'order__delivery_room', 'order__delivery_room__camp', 'room', 'room__camp'
+        )
+        .filter(kind=SiteScan.Kind.DELIVERY, client_uuid=client_uuid)
+        .first()
+    )
+    if existing is not None:
+        return result_from_scan(existing)
+
+    found = find_order_by_code(order_code)
+    order = LaundryOrder.objects.select_for_update().get(pk=found.id)
+    # Dos reintentos simultáneos pueden haber pasado el primer lookup antes de
+    # que uno confirme la transacción. Bajo el bloqueo se vuelve a comprobar.
+    existing = (
+        SiteScan.objects.select_related(
+            'order', 'order__company', 'order__delivery_room', 'order__delivery_room__camp', 'room', 'room__camp'
+        )
+        .filter(kind=SiteScan.Kind.DELIVERY, client_uuid=client_uuid)
+        .first()
+    )
+    if existing is not None:
+        return result_from_scan(existing)
+
+    is_room_delivery = order.company.delivery_flow == Company.DeliveryFlow.WITH_ROOM_DELIVERY
+    if is_room_delivery and room_qr is None:
+        raise OrderFlowError('Este morral corresponde a Flujo 1: debes escanear el QR de la habitación.')
+
+    room = camps_services.get_room_by_qr(room_qr) if room_qr is not None else None
+    expected = order.delivery_room if is_room_delivery else None
+
+    room_matched = expected is not None and room is not None and expected.id == room.id
+    if is_room_delivery and not room_matched and not confirm_different_room:
         detail = (
             f'La guía se debía entregar en {expected.camp.name} · {expected.number}, '
             f'pero se escaneó {room.camp.name} · {room.number}.'
@@ -1488,7 +1542,7 @@ def confirm_delivery_by_scan(
         raise DeliveryRoomMismatch(detail, scanned=room, expected=expected)
 
     full_note = note
-    if not room_matched:
+    if is_room_delivery and not room_matched:
         discrepancy = (
             f'Entregada en {room.camp.name} · {room.number} '
             f'(destino registrado: '
@@ -1505,14 +1559,23 @@ def confirm_delivery_by_scan(
         .order_by('-scanned_at')
         .first()
     )
-    if scan is not None and scan.room_id is None:
+    if scan is not None:
+        scan.client_uuid = client_uuid
         scan.room = room
-        scan.save(update_fields=['room'])
+        scan.latitude = Decimal(str(latitude))
+        scan.longitude = Decimal(str(longitude))
+        scan.accuracy_meters = accuracy_meters
+        scan.save(update_fields=['client_uuid', 'room', 'latitude', 'longitude', 'accuracy_meters'])
 
     return {
+        'client_uuid': client_uuid,
         'order': updated,
+        'delivery_target': 'HABITACION' if is_room_delivery else 'CLIENTE',
         'scanned_room': room,
         'expected_room': expected,
-        'room_matched': room_matched,
+        'room_matched': room_matched if is_room_delivery else None,
+        'latitude': latitude,
+        'longitude': longitude,
+        'accuracy_meters': accuracy_meters,
         'delivered_at': updated.delivered_at,
     }

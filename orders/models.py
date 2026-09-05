@@ -126,6 +126,24 @@ class LaundryOrder(TimeStampedModel):
         verbose_name = 'Guía'
         verbose_name_plural = 'Guías'
         ordering = ['-received_at']
+        constraints = [
+            # El ref identifica un morral fisico: va impreso en los adhesivos
+            # pegados a la ropa y en la boleta, y es lo que la pistola resuelve
+            # en la mesa de empaque. Que no se repita lo garantizaba solo
+            # `generate_reference` con su contador bloqueado; esta constraint lo
+            # vuelve estructural, para que ninguna via alternativa pueda escribir
+            # un duplicado.
+            #
+            # Solo cubre el formato moderno, terminado en letra de ciclo. Los
+            # refs legados se reiniciaban cada semana y están repetidos en el
+            # histórico; conservarlos es necesario para seguir leyendo sus
+            # boletas, pero no deben impedir la garantía sobre los nuevos.
+            models.UniqueConstraint(
+                fields=['reference'],
+                condition=models.Q(reference__regex=r'^[A-Z]{1,3}[0-9]{4}[A-Z]+$'),
+                name='unique_reference_per_order',
+            ),
+        ]
         indexes = [
             models.Index(fields=['status', 'received_at']),
             models.Index(fields=['company', 'status']),
@@ -287,7 +305,12 @@ class ReferenceCounter(models.Model):
     """
 
     prefix = models.CharField(max_length=3, unique=True)
-    cycle = models.CharField('Letra de ciclo', max_length=2, default='A')
+    # 4 caracteres y no 2: `next_cycle` cuenta en base 26 sin techo (Z -> AA ->
+    # ... -> ZZ -> AAA), asi que con max_length=2 la generacion del ref reventaba
+    # con un DataError al agotar ZZ. Son 702 ciclos x 1000 numeros = 702.000 refs
+    # por prefijo; lejos, pero era una rotura garantizada y no un limite de
+    # diseno. Con 4 alcanza para 475.000 ciclos.
+    cycle = models.CharField('Letra de ciclo', max_length=4, default='A')
     last_number = models.PositiveIntegerField(default=REFERENCE_SEQUENCE_START)
 
     class Meta:
@@ -310,7 +333,7 @@ class SiteScan(models.Model):
     class Kind(models.TextChoices):
         DIRTY_IN = 'RECEPCION_SUCIA', 'Recepción ropa sucia en faena'
         CLEAN_IN = 'RECEPCION_LIMPIA', 'Recepción ropa limpia en faena'
-        DELIVERY = 'ENTREGA', 'Entrega en habitación'
+        DELIVERY = 'ENTREGA', 'Entrega'
 
     kind = models.CharField(max_length=20, choices=Kind.choices)
     scanned_code = models.CharField('Código pistoleado', max_length=30, db_index=True)
@@ -326,6 +349,12 @@ class SiteScan(models.Model):
     room = models.ForeignKey(
         'camps.Room', on_delete=models.SET_NULL, null=True, blank=True, related_name='scans'
     )
+    # Identifica de forma estable una entrega creada offline. Si el dispositivo
+    # pierde la respuesta puede reenviar el mismo evento sin duplicar el hito.
+    client_uuid = models.UUIDField(null=True, blank=True, unique=True, editable=False)
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    accuracy_meters = models.FloatField(null=True, blank=True)
     note = models.CharField(max_length=255, blank=True)
 
     class Meta:

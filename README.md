@@ -168,6 +168,45 @@ Para mantener la coherencia del sistema, **no programar lógica dentro de las vi
 
 ## 📝 Comandos Útiles
 
+### Base de demostración
+
+El siguiente comando elimina y reemplaza todos los datos de negocio: OT,
+clientes, empresas, trabajadores, faenas, campamentos, habitaciones, prendas,
+precios, pesajes, conflictos y lotes de hotelería. Las cuentas de acceso de
+`authentication.User` se conservan sin modificar ID, contraseña ni rol.
+
+```bash
+# Revisar el volumen que se reemplazaría, sin modificar la base
+python manage.py seed_demo --dry-run
+
+# Aplicar el reset y cargar el escenario demo
+python manage.py seed_demo --confirm
+```
+
+No ejecutar `seed_demo --confirm` en producción. El escenario resultante incluye
+10 OT (`M1001A` a `M1007A` y `S1001A` a `S1003A`), 2 pesajes, 3 lotes de
+hotelería y ejemplos de todos los estados. `M1008A` queda pendiente de
+digitalización. Las cuentas operativas son:
+
+| Usuario | Rol | Contraseña |
+|---|---|---|
+| `demo_admin` | Administrador | `Servilion.2026` |
+| `demo_supervisor` | Supervisor | `Servilion.2026` |
+| `demo_pesaje` | Pesaje | `Servilion.2026` |
+| `demo_ot` | Digitador OT | `Servilion.2026` |
+| `demo_empaque` | Digitador empaque | `Servilion.2026` |
+
+Los QR de puerta son determinísticos y se regeneran iguales en cada ejecución:
+
+| Habitación | QR |
+|---|---|
+| Campamento Norte · 101 | `fc8bb5ba-68f5-59fd-878a-9d3e5b951eee` |
+| Campamento Norte · 102 | `bf465840-4fab-5fce-96d3-d86aaf9bb919` |
+| Campamento Norte · 103 | `b786f4b5-1bdb-5553-b49b-23f6b8b673df` |
+| Campamento Central · 201 | `6f41622b-7bde-574d-adb4-fa4dcf4d0b4c` |
+| Campamento Central · 202 | `60b1aad7-61ac-52af-9bd0-75a5fc380b10` |
+| Campamento Central · 203 | `d055d2be-b2b2-5ea9-9885-f2e575109806` |
+
 * **Ver los logs de los contenedores:**
 ```bash
 docker compose logs -f api

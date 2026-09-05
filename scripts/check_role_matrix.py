@@ -19,13 +19,27 @@ from authentication.services import issue_tokens
 if 'testserver' not in settings.ALLOWED_HOSTS:
     settings.ALLOWED_HOSTS.append('testserver')
 
-ROLES = ['ADMIN', 'SUPERVISOR', 'DIGITADOR_OT', 'DIGITADOR_EMPAQUE']
+ROLES = ['ADMIN', 'SUPERVISOR', 'PESAJE', 'DIGITADOR_OT', 'DIGITADOR_EMPAQUE']
 
 # (etiqueta, método, ruta, cuerpo, roles que DEBEN poder)
 CASES = [
+    # El cuerpo tiene que pasar el esquema: Ninja valida ANTES de entrar a la
+    # vista, y un 422 taparía el 403 que queremos medir (ver `can` abajo).
+    ('Registrar pesaje', 'post', '/api/weighing/',
+     {'client_id': 999999, 'company_id': 999999, 'garment_count': 1, 'weight_kg': 1.0},
+     {'ADMIN', 'SUPERVISOR', 'PESAJE'}),
+
+    ('Anular pesaje', 'post', '/api/weighing/999999/void',
+     {'note': 'X'},
+     {'ADMIN', 'SUPERVISOR', 'PESAJE'}),
+
     ('Digitalizar OT', 'post', '/api/orders/',
      {'order_number': 'TEST-PERM', 'worker_id': 999999, 'received_at': '2026-01-01T00:00:00Z', 'items': []},
      {'ADMIN', 'SUPERVISOR', 'DIGITADOR_OT'}),
+
+    ('Pistoleo unico de empaque', 'post', '/api/orders/scan/packing',
+     {'code': 'X', 'quantity': 1},
+     {'ADMIN', 'SUPERVISOR', 'DIGITADOR_EMPAQUE'}),
 
     ('Pistolear empaque', 'post', '/api/orders/999999/packing/scan',
      {'code': 'X', 'quantity': 1},
@@ -50,10 +64,22 @@ CASES = [
     ('Torre de control', 'get', '/api/reports/operations/summary', None,
      {'ADMIN', 'SUPERVISOR'}),
 
-    ('Conflictos de sincronización', 'get', '/api/orders/sync-conflicts', None,
-     {'ADMIN'}),
+    # Hoteleria reparte sus tres momentos entre los mismos puestos que el morral,
+    # salvo el despacho: ahi se fija la merma definitiva del lote y queda en el
+    # supervisor.
+    ('Recibir carga de lenceria', 'post', '/api/hospitality/',
+     {'company_id': 999999, 'items': [{'quantity_in': 1, 'custom_name': 'X'}]},
+     {'ADMIN', 'SUPERVISOR', 'DIGITADOR_OT'}),
 
-    ('Facturación', 'get', '/api/orders/reports/billing/fake-task-id', None,
+    ('Contar salida de lenceria', 'post', '/api/hospitality/999999/return-count',
+     {'counts': []},
+     {'ADMIN', 'SUPERVISOR', 'DIGITADOR_EMPAQUE'}),
+
+    ('Despachar lote de lenceria', 'post', '/api/hospitality/999999/dispatch',
+     {'received_by_client': '', 'note': ''},
+     {'ADMIN', 'SUPERVISOR'}),
+
+    ('Conflictos de sincronización', 'get', '/api/orders/sync-conflicts', None,
      {'ADMIN'}),
 
     ('Crear trabajador', 'post', '/api/workers/',

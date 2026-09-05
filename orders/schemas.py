@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from ninja import Schema
+from pydantic import Field
 
 from common.schemas import PresignedUploadOut
 
@@ -54,7 +55,11 @@ class LaundryOrderIn(Schema):
     laundry_received_at: datetime | None = None
     promised_at: datetime | None = None
     observations: str = ''
-    reference: str = ''
+    # `reference` NO se acepta del cliente: lo emite `generate_reference` con su
+    # contador bloqueado, o se hereda del pesaje cuando viene `weigh_in_id`. Si
+    # el cliente pudiera proponerlo, la unicidad del ref dependeria de que cada
+    # cliente se porte bien en vez de del servidor, que es justo lo que la
+    # constraint de `LaundryOrder.reference` viene a garantizar.
     control_code: str = ''
     # Si no viene, se toma `worker.current_room` (ver services.create_order).
     delivery_room_id: int | None = None
@@ -144,8 +149,15 @@ class LaundryOrderOut(Schema):
     # Pesaje de origen. `weighed_garment_count` es lo que contó la báscula y
     # puede diferir de `garment_count`: manda el digitador, y la diferencia
     # queda a la vista en vez de sobrescribirse.
+    #
+    # `weighed_at` es el primer momento en que el sistema vio este morral, y
+    # ocurre ANTES de que la guía exista (FLUJO_NEGOCIO.md §4, paso 4a). Se
+    # expone acá para que la línea de tiempo pueda empezar donde empieza el
+    # morral y no donde empieza la guía. Null cuando se digitalizó sin báscula:
+    # ahí el pesaje no está pendiente, no va a ocurrir nunca.
     weigh_in_id: int | None
     weighed_garment_count: int | None
+    weighed_at: datetime | None
     updated_at: datetime
 
     @staticmethod
@@ -159,6 +171,13 @@ class LaundryOrderOut(Schema):
     def resolve_weighed_garment_count(obj) -> int | None:
         weigh_in = getattr(obj, 'weigh_in', None)
         return weigh_in.garment_count if weigh_in else None
+
+    @staticmethod
+    def resolve_weighed_at(obj):
+        # Sin consulta extra: `weigh_in` ya viene en el `select_related` de
+        # `get_order` y de `list_orders`.
+        weigh_in = getattr(obj, 'weigh_in', None)
+        return weigh_in.weighed_at if weigh_in else None
 
     @staticmethod
     def resolve_worker_name(obj) -> str:
@@ -424,7 +443,9 @@ class OrderSyncIn(Schema):
     promised_at: datetime | None = None
     delivered_at: datetime | None = None
     observations: str = ''
-    reference: str = ''
+    # Idem `LaundryOrderIn`: el ref lo emite el servidor. Un dispositivo offline
+    # no puede generar uno valido —necesita el contador bloqueado— asi que
+    # aceptarselo solo abriria la puerta a que dos equipos sincronicen el mismo.
     control_code: str = ''
     # Si no viene, se toma `worker.current_room` (ver services.create_order).
     delivery_room_id: int | None = None
@@ -488,19 +509,23 @@ class BillingReportResultOut(Schema):
     result: dict | None = None
 
 
-# --- Entrega en habitación (app móvil: QR de la OT + QR de la puerta) ---
+# --- Entrega móvil (QR del morral y, en Flujo 1, QR de la puerta) ---
 
 
 class DeliveryConfirmIn(Schema):
-    """Payload del doble escaneo que hace la app al dejar el morral.
+    """Payload que la app guarda offline al entregar el morral.
 
     `order_code` es lo que va impreso en la etiqueta/boleta (n° de OT, `ref` o
-    código de control, indistintamente). `room_qr` es el UUID pegado en la
-    puerta.
+    código de control, indistintamente). `room_qr` es obligatorio en Flujo 1 y
+    se omite en Flujo 2, donde la entrega es directamente al cliente.
     """
 
+    client_uuid: UUID
     order_code: str
-    room_qr: UUID
+    room_qr: UUID | None = None
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_meters: float = Field(gt=0)
     note: str = ''
     # La app opera offline-first: el momento real de la entrega es el del
     # dispositivo, no el de la sincronización. Si no viene, se usa `now()`.
@@ -523,10 +548,15 @@ class DeliveryRoomOut(Schema):
 
 
 class DeliveryConfirmOut(Schema):
+    client_uuid: UUID
     order: LaundryOrderOut
-    scanned_room: DeliveryRoomOut
+    delivery_target: str
+    scanned_room: DeliveryRoomOut | None
     expected_room: DeliveryRoomOut | None
-    room_matched: bool
+    room_matched: bool | None
+    latitude: float
+    longitude: float
+    accuracy_meters: float
     delivered_at: datetime
 
 

@@ -23,17 +23,21 @@ router = Router(auth=JWTAuth())
 )
 @require_roles(User.Role.SUPERVISOR)
 def confirm_delivery(request, payload: DeliveryConfirmIn):
-    """Registra la entrega del morral tras escanear la OT y el QR de la puerta.
+    """Sincroniza una entrega móvil con ubicación obligatoria.
 
-    409 significa que la puerta escaneada no es el destino de la guía: la app
-    debe mostrar ambas habitaciones y reenviar con `confirm_different_room` si
-    el operador confirma que el trabajador se mudó.
+    Flujo 1 exige el QR de la puerta. Un 409 indica que no coincide con el
+    destino y requiere una segunda confirmación. Flujo 2 omite la puerta y
+    registra que el morral fue entregado al cliente.
     """
     try:
         result = services.confirm_delivery_by_scan(
+            client_uuid=payload.client_uuid,
             order_code=payload.order_code,
             room_qr=payload.room_qr,
             user=request.auth,
+            latitude=payload.latitude,
+            longitude=payload.longitude,
+            accuracy_meters=payload.accuracy_meters,
             note=payload.note,
             delivered_at=payload.delivered_at,
             confirm_different_room=payload.confirm_different_room,

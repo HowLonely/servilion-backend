@@ -9,6 +9,7 @@ from django.conf import settings
 from django.db import transaction
 from django.test import Client as HttpClient
 from django.utils import timezone
+from uuid import uuid4
 
 from authentication.models import User
 from authentication.services import issue_tokens
@@ -63,13 +64,21 @@ def run() -> bool:
         return order
 
     def post(body: dict):
-        return http.post('/api/delivery/confirm', data=body, content_type='application/json', **auth)
+        payload = {
+            'client_uuid': str(uuid4()),
+            'latitude': -24.625,
+            'longitude': -70.402,
+            'accuracy_meters': 8.5,
+            **body,
+        }
+        return http.post('/api/delivery/confirm', data=payload, content_type='application/json', **auth)
 
     ok = True
 
     # 1. Pieza correcta -> entrega registrada
     g1 = nueva_guia('__OT1')
-    r = post({'order_code': '__OT1', 'room_qr': str(pieza_ok.qr_code)})
+    event_id = str(uuid4())
+    r = post({'client_uuid': event_id, 'order_code': '__OT1', 'room_qr': str(pieza_ok.qr_code)})
     body = r.json()
     g1.refresh_from_db()
     ok &= check('Pieza correcta responde 200', r.status_code == 200, str(r.status_code))
@@ -77,6 +86,10 @@ def run() -> bool:
     ok &= check('room_matched = True', body.get('room_matched') is True)
     scan = SiteScan.objects.filter(order=g1, kind=SiteScan.Kind.DELIVERY).first()
     ok &= check('Pistoleo guarda la habitación', scan is not None and scan.room_id == pieza_ok.id)
+    ok &= check('Pistoleo guarda GPS', scan is not None and scan.latitude is not None and scan.longitude is not None)
+    retry = post({'client_uuid': event_id, 'order_code': '__OT1', 'room_qr': str(pieza_ok.qr_code)})
+    ok &= check('Reintento idempotente responde 200', retry.status_code == 200, str(retry.status_code))
+    ok &= check('Reintento no duplica pistoleo', SiteScan.objects.filter(order=g1, kind=SiteScan.Kind.DELIVERY).count() == 1)
 
     # 2. Pieza equivocada -> 409 sin entregar
     g2 = nueva_guia('__OT2')
@@ -115,7 +128,7 @@ def run() -> bool:
     ok &= check('Guía sin recepción en faena responde 400', r.status_code == 400, str(r.status_code))
     ok &= check('Guía NO cambió de estado', g3.status == OrderStatus.RECEIVED, g3.status)
 
-    # 7. Flujo 2 (entrega solo al cliente) -> 400
+    # 7. Flujo 2 registra entrega al cliente sin QR de habitación
     empresa2 = Company.objects.create(
         client=cliente, name='__EMP_F2', delivery_flow=Company.DeliveryFlow.CLIENT_ONLY
     )
@@ -128,8 +141,13 @@ def run() -> bool:
     SiteScan.objects.create(
         kind=SiteScan.Kind.CLEAN_IN, scanned_code='__OT4', order=g4, scanned_at=timezone.now()
     )
-    r = post({'order_code': '__OT4', 'room_qr': str(pieza_ok.qr_code)})
-    ok &= check('Flujo 2 rechaza la entrega', r.status_code == 400, str(r.status_code))
+    r = post({'order_code': '__OT4'})
+    g4.refresh_from_db()
+    ok &= check('Flujo 2 responde 200', r.status_code == 200, str(r.status_code))
+    ok &= check('Flujo 2 queda ENTREGADA', g4.status == OrderStatus.DELIVERED, g4.status)
+    ok &= check('Flujo 2 informa entrega al cliente', r.json().get('delivery_target') == 'CLIENTE')
+    scan4 = SiteScan.objects.filter(order=g4, kind=SiteScan.Kind.DELIVERY).first()
+    ok &= check('Flujo 2 guarda GPS sin habitación', scan4 is not None and scan4.room_id is None and scan4.latitude is not None)
 
     print()
     print('RESULTADO:', 'todo correcto' if ok else 'HAY FALLAS')

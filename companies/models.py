@@ -122,8 +122,8 @@ class Company(TimeStampedModel):
         """Modalidad de contrato (FLUJO_NEGOCIO.md §2).
 
         FLUJO_1 entrega el morral al trabajador en su habitación y registra esa
-        entrega; FLUJO_2 entrega al mandante sin trazabilidad individual, por lo
-        que la guía pasa de despachada directo a cobrada.
+        puerta; FLUJO_2 entrega al mandante sin escaneo de habitación. Ambos
+        registran fecha, hora y ubicación desde la app móvil.
         """
 
         WITH_ROOM_DELIVERY = 'FLUJO_1', 'Flujo 1 - entrega en habitación'

@@ -31,10 +31,10 @@ No todos los clientes operan igual. El sistema debe contemplar **dos flujos**:
 
 | Flujo | Descripción | Seguimiento de entrega |
 |---|---|---|
-| **Flujo 1** | Contratos con **entrega en habitación** | Sí — la app Android registra la entrega al trabajador |
-| **Flujo 2** | Contratos con **entrega solo al cliente** | No — el morral se entrega al mandante sin trazabilidad de entrega individual |
+| **Flujo 1** | Contratos con **entrega en habitación** | QR del morral + QR de habitación + fecha/hora + GPS |
+| **Flujo 2** | Contratos con **entrega solo al cliente** | QR del morral + fecha/hora + GPS, sin habitación |
 
-El detalle operativo documentado hoy corresponde al **Flujo 1**. El Flujo 2 omite los pasos de recepción/entrega en habitación vía app.
+El Flujo 2 omite el escaneo de habitación, pero registra igualmente la entrega final al cliente desde la app.
 
 ---
 
@@ -273,19 +273,20 @@ El supervisor de Servilion en faena:
 
 > **Campo nuevo requerido:** la recepción de ropa **limpia** en faena no existe en Access y debe agregarse al modelo (timestamp + usuario que confirma).
 
-### Paso 9 — Entrega en habitación (app Android)
+### Paso 9 — Entrega móvil (app Android)
 
 Aquí entra la **app Android** de reparto:
 
-1. El repartidor escanea **2 QR** — uno con el número de OT (de la boleta) y otro del destino/habitación.
+1. El repartidor escanea el QR de la OT. En Flujo 1 escanea además el QR de la habitación; en Flujo 2 la app informa que entrega directamente al cliente.
 2. La app registra la entrega en **cola offline** (sin internet en campamento).
-3. Al recuperar señal, sincroniza con el backend (`POST /api/orders/sync`).
-4. Se actualiza `entregado` — la **fecha real de entrega**, distinta de `entrega` (fecha tentativa según turno impresa en la boleta).
-5. El contador **ENTREGADOS** de la app se incrementa.
+3. Obtiene obligatoriamente fecha, hora y georreferencia precisa del dispositivo.
+4. Al recuperar señal, sincroniza el evento idempotente con el backend (`POST /api/delivery/confirm`).
+5. Se actualiza `entregado` — la **fecha real de entrega**, distinta de `entrega` (fecha tentativa según turno impresa en la boleta).
+6. El contador **ENTREGADOS** de la app se incrementa.
 
 ### Paso 10 — Cobro (fuera de alcance del sistema)
 
-La guía se factura a la empresa contratista, pero esto ocurre fuera del sistema: no existe un estado `COBRADA` ni un reporte de facturación — se retiraron del flujo (ver §6 y §9). `ENTREGADA` (Flujo 1) y `DESPACHADA` (Flujo 2) son los estados terminales de la guía.
+La guía se factura a la empresa contratista, pero esto ocurre fuera del sistema: no existe un estado `COBRADA` ni un reporte de facturación — se retiraron del flujo (ver §6 y §9). `ENTREGADA` es el estado terminal en ambos flujos.
 
 ---
 
@@ -313,8 +314,8 @@ Los estados del backend deben alinearse con el flujo real. Mapeo propuesto respe
 | `EN_REVISION` | Revisión post-lavado / pre-empaque |
 | `INCOMPLETA` | Morral cerrado con una discrepancia en el conteo, aún en planta (paso 6) |
 | `COMPLETADA` | Morral cerrado completo por pistoleo, aún en planta (paso 6) |
-| `DESPACHADA` | Morral cargado y en tránsito a faena (paso 7) — estado terminal en Flujo 2 |
-| `ENTREGADA` | Entrega confirmada en habitación vía app (paso 9) — estado terminal en Flujo 1 |
+| `DESPACHADA` | Morral cargado y en tránsito a faena (paso 7) |
+| `ENTREGADA` | Entrega confirmada vía app (habitación en Flujo 1, cliente en Flujo 2) — estado terminal |
 
 Cada cambio de estado queda auditado en `OrderStatusHistory`. El sistema legado solo guardaba el estado final.
 
@@ -331,7 +332,7 @@ Cada cambio de estado queda auditado en `OrderStatusHistory`. El sistema legado 
 - **El pistoleo es el mecanismo central de trazabilidad** — en recepción faena, recepción planta, empaque y entrega. No es solo la app Android.
 - **El `ref` es el identificador operativo diario** (corto, en etiquetas lavables); la `ot` es el identificador formal de la guía; el `control` identifica la boleta impresa.
 - **La OT física admite ítems fuera del catálogo** — el trabajador puede escribir prendas no preimpresas; Antofagasta debe poder registrarlas al digitalizar.
-- **La app móvil opera offline en campamento.** Cola local de entregas → sync en lote al recuperar señal. Resolución de conflictos: *last-write-wins* por `updated_at`.
+- **La app móvil opera offline en campamento.** Cola local SQLite de entregas → envío idempotente al recuperar señal mediante `client_uuid` propio del evento.
 - **Los archivos pesados (fotos, logos) nunca pasan por el backend.** Subida directa a S3 con URL presignada.
 
 ---
@@ -359,7 +360,7 @@ erDiagram
 | Recepción de ropa limpia en faena | **Cerrada** | `site_clean_received_at` / `site_clean_received_by`, vía `POST /orders/{id}/clean-reception`. Es requisito previo para registrar la entrega. |
 | `entrega` vs. `entregado` | **Cerrada** | `promised_at` se calcula según el turno del trabajador al digitalizar; `delivered_at` se fija al registrar la entrega. |
 | App PEÑON (faena) vs. app Android (entrega) | **Parcial** | El backend recibe ambos flujos (`POST /orders/scan/site-reception` y `POST /orders/sync`) y expone los contadores en `GET /orders/counters`. Las apps móviles siguen pendientes. |
-| Flujo 2 (sin seguimiento de entrega) | **Cerrada** | `Company.delivery_flow`; en FLUJO_2 la guía llega a `DESPACHADA` y ahí queda (estado terminal), y el endpoint de entrega la rechaza. |
+| Flujo 2 (entrega al cliente) | **Cerrada** | `Company.delivery_flow`; en FLUJO_2 se escanea sólo el morral y la app registra fecha, hora y GPS sin habitación. |
 | `ref` con reset semanal | **Cerrada** | `ReferenceCounter` por (prefijo, año ISO, semana ISO), reseteo a 1000 y generación serializada. El prefijo sale de `Company.reference_prefix`. |
 | Validación por pistoleo en empaque | **Cerrada** | `OrderItem.scanned_quantity` + `POST /orders/{id}/packing/scan` y `/packing/finish`: completa la guía o la marca `INCOMPLETA` con la discrepancia. |
 | Prendas fuera de catálogo | **Cerrada** | `OrderItem.garment_type` es opcional y admite `custom_name`, como la OT física escrita a mano. |
@@ -378,6 +379,5 @@ erDiagram
 - Si el cobro por kilo (`BillingType.KILOS`) se usará alguna vez.
 - Política de conflictos de sync offline (hoy silenciosa; ver `AI_LOGS/prompt_19_07_26.md`).
 - Si conviene migrar las ~282.000 guías históricas de Access o arrancar en cero.
-- Detalle operativo del **Flujo 2** (entrega solo al cliente, sin app de habitación).
 - Confirmar significado exacto de `ticket`, `control`, `imagen` y `codigo`.
 - Si re-proceso y costura deben registrarse como sub-estados o eventos en el sistema.

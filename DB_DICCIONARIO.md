@@ -402,8 +402,8 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 | `EN_REVISION` | En revisión | setea `reviewed_by` |
 | `INCOMPLETA` | Incompleta | `incomplete_at` — morral cerrado con faltante, aún en planta |
 | `COMPLETADA` | Completa | `completed_at` — morral cerrado completo, aún en planta |
-| `DESPACHADA` | Despachada | `dispatched_at`, setea `dispatched_by` — terminal en Flujo 2 |
-| `ENTREGADA` | Entregada | `delivered_at`, setea `delivered_by` — terminal en Flujo 1 |
+| `DESPACHADA` | Despachada | `dispatched_at`, setea `dispatched_by` |
+| `ENTREGADA` | Entregada | `delivered_at`, setea `delivered_by` — terminal en ambos flujos |
 
 `INCOMPLETA`/`COMPLETADA` describen **con qué** quedó el morral; `DESPACHADA`, **dónde** está. Por eso el despacho no se duplica en dos estados: una guía despachada con un faltante a bordo conserva `incomplete_at` y sus resoluciones pendientes, que es donde se lee su completitud.
 
@@ -454,6 +454,11 @@ El backend **nunca** recibe el archivo binario. Genera URL presignada (`common.s
 ---
 
 ## 8. Sincronización offline-first (app móvil)
+
+Las entregas usan `orders_sitescan` como registro de evidencia. Para eventos
+`ENTREGA`, `client_uuid` evita duplicados al reintentar y `latitude`,
+`longitude`, `accuracy_meters` guardan la posición obligatoria. `room_id` es
+obligatorio funcionalmente en Flujo 1 y nulo en Flujo 2.
 
 Campos clave en `orders_laundryorder`:
 
@@ -587,7 +592,7 @@ Referencia: `ejemplo_db_penon.mdb` → export JSONL → `python manage.py import
 | Legado | Nuevo |
 |---|---|
 | *(vacío)* | `RECIBIDA` |
-| `COBRADO` | `ENTREGADA` (Flujo 1) / `DESPACHADA` (Flujo 2) — según `Company.delivery_flow`, ver `LEGACY_BILLED_STATUS` |
+| `COBRADO` | `ENTREGADA` (Flujo 1) / `DESPACHADA` (Flujo 2) — mapeo histórico; las nuevas entregas de ambos flujos terminan en `ENTREGADA` |
 | `COMPLETO` | `DESPACHADA` |
 | `CHECK` / `CH3ECK` | `EN_REVISION` |
 | `DESPACHADO` | `DESPACHADA` |
