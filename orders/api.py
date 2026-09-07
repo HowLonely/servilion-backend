@@ -12,6 +12,7 @@ from orders import services
 from orders.models import LaundryOrder
 from orders.schemas import (
     AmbiguousReferenceOut,
+    DispatchScanIn,
     GarmentLabelOut,
     LaundryOrderIn,
     LaundryOrderOut,
@@ -125,6 +126,45 @@ def scan_packing_code(request, payload: PackingCodeScanIn):
         return 400, {'detail': str(exc)}
 
 
+@router.post(
+    '/scan/dispatch',
+    response={200: LaundryOrderOut, 400: MessageOut, 404: MessageOut, 409: AmbiguousReferenceOut},
+)
+@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
+def scan_dispatch_code(request, payload: DispatchScanIn):
+    """Pistoleo único del módulo Despacho (paso 7).
+
+    Un solo disparo resuelve la boleta y despacha: a diferencia de
+    `/scan/packing`, acá no hay nada que abrir ni cerrar.
+    """
+    try:
+        return 200, services.scan_dispatch_code(payload.code, user=request.auth, note=payload.note)
+    except services.AmbiguousReferenceError as exc:
+        # 409: mismo resguardo que `/scan/packing` — el código calza con más
+        # de un morral vivo y solo el operador, que lo tiene al frente, sabe
+        # cuál despachar.
+        return 409, {
+            'detail': str(exc),
+            'reference': exc.reference,
+            'candidates': [
+                {
+                    'order_id': candidate.id,
+                    'order_number': candidate.order_number,
+                    'reference': candidate.reference,
+                    'worker_name': candidate.worker.full_name,
+                    'company_name': candidate.company.name,
+                    'status': candidate.status,
+                    'received_at': candidate.received_at,
+                }
+                for candidate in exc.candidates
+            ],
+        }
+    except LaundryOrder.DoesNotExist as exc:
+        return 404, {'detail': str(exc)}
+    except services.OrderFlowError as exc:
+        return 400, {'detail': str(exc)}
+
+
 @router.get('/scan/{code}', response={200: LaundryOrderOut, 404: MessageOut})
 def find_order_by_code(request, code: str):
     """Resuelve un código pistoleado (OT, ref o control) a la guía correspondiente."""
@@ -230,9 +270,8 @@ def finish_packing(request, order_id: int, payload: NoteIn):
 def dispatch_order(request, order_id: int, payload: NoteIn):
     """Despacha a faena un morral ya cerrado (paso 7).
 
-    La vía normal es el tercer pistoleo de la boleta en la mesa de empaque
-    (`/scan/packing`); este endpoint es el equivalente por id para el panel,
-    igual que `/packing/finish` lo es del segundo disparo.
+    Es el único disparador del despacho: vive en su propio módulo Despacho,
+    separado de la mesa de empaque (`/scan/packing`), que solo abre y cierra.
     """
     try:
         return 200, services.dispatch_order(order_id, user=request.auth, note=payload.note)

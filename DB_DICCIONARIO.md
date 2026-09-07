@@ -394,7 +394,7 @@ Convención de nombres Django → PostgreSQL: `{app_label}_{modelname_lowercase}
 
 ### 5.3 `OrderStatus` (`orders_laundryorder.status`, historial)
 
-`EN_LAVADO` y `COBRADA` nunca llegaron a implementarse como estados propios o se retiraron del flujo. `DESPACHADA` sí existe: se había eliminado por no tener ningún pistoleo detrás y volvió al separarse el CIERRE del morral de su DESPACHO — son el segundo y el tercer disparo de la boleta sobre el mismo morral (ver `orders/models.py::OrderStatus` y FLUJO_NEGOCIO.md §4 pasos 6–7, §6/§10). El enum vigente es:
+`EN_LAVADO` y `COBRADA` nunca llegaron a implementarse como estados propios o se retiraron del flujo. `DESPACHADA` sí existe: se había eliminado por no tener ningún pistoleo detrás y volvió al separarse el CIERRE del morral (mesa de empaque, `/scan/packing`) de su DESPACHO (módulo Despacho aparte, `/{id}/dispatch`) (ver `orders/models.py::OrderStatus` y FLUJO_NEGOCIO.md §4 pasos 6–7, §6/§10). El enum vigente es:
 
 | Valor DB | Etiqueta | Timestamp auto |
 |---|---|---|
@@ -420,7 +420,7 @@ DESPACHADA     → ENTREGADA
 ENTREGADA      → (ninguna — estado terminal)
 ```
 
-RECIBIDA → EN_REVISION, EN_REVISION/INCOMPLETA → COMPLETADA y COMPLETADA/INCOMPLETA → DESPACHADA no son manuales: el sistema las decide solo como efecto de digitalizar la guía (`create_order`), pistolear el empaque (`scan_packed_garment` / `finish_packing`), resolver una prenda faltante (`resolve_missing_item`) o pistolear la boleta de un morral ya cerrado (`dispatch_order`) — ver `orders.services._advance_status`.
+RECIBIDA → EN_REVISION, EN_REVISION/INCOMPLETA → COMPLETADA y COMPLETADA/INCOMPLETA → DESPACHADA no son manuales: el sistema las decide solo como efecto de digitalizar la guía (`create_order`), pistolear el empaque (`scan_packed_garment` / `finish_packing`), resolver una prenda faltante (`resolve_missing_item`) o pistolear la boleta en el módulo Despacho (`dispatch_order`) — ver `orders.services._advance_status`.
 
 Cambios manuales vía API: `PATCH /api/orders/{id}/status` — validados en servicio; violaciones → HTTP 400.
 
