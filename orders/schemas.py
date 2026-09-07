@@ -321,6 +321,13 @@ class PackingCodeScanIn(Schema):
     quantity: int = 1
 
 
+class DispatchScanIn(Schema):
+    """Pistoleo único del módulo Despacho: resuelve la boleta y despacha directo."""
+
+    code: str
+    note: str = ''
+
+
 class PackingScanOut(Schema):
     """Qué hizo el pistoleo: abrió el morral, lo cerró, lo despachó o marcó una prenda."""
 

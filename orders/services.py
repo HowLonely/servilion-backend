@@ -126,8 +126,6 @@ PACKING_ACTION_CLOSED = 'CERRADO'
 PACKING_ACTION_SCANNED = 'PISTOLEADA'
 # La prenda que faltaba reapareció: se pistoleó sobre una guía ya Incompleta.
 PACKING_ACTION_FOUND = 'ENCONTRADA'
-# El morral cerrado salió de planta rumbo a faena (paso 7).
-PACKING_ACTION_DISPATCHED = 'DESPACHADA'
 
 
 class InvalidStatusTransition(Exception):
@@ -953,6 +951,24 @@ def find_resolvable_order(code: str, reference_only: bool = False) -> LaundryOrd
     return order
 
 
+def scan_dispatch_code(code: str, user: User, note: str = '') -> LaundryOrder:
+    """Pistoleo único del módulo Despacho (FLUJO_NEGOCIO.md §4, paso 7).
+
+    Un solo disparo resuelve la boleta y despacha: acá no hay nada que abrir ni
+    cerrar, así que a diferencia de `scan_packing_code` no hace falta deducir
+    una acción — si el código resuelve a un morral con algo pendiente de
+    despacho, ese mismo pistoleo lo saca de planta (o envía la prenda resuelta
+    aparte, si el morral ya había viajado).
+
+    `find_dispatchable_order` es lo que hace esto seguro: restringe a las
+    guías vivas para el despacho y reventa `AmbiguousReferenceError` si el
+    código calza con más de una, en vez de despachar la que no corresponde —
+    el mismo resguardo que ya tenía la mesa de empaque.
+    """
+    order = find_dispatchable_order(code)
+    return dispatch_order(order.id, user=user, note=note)
+
+
 @transaction.atomic
 def scan_packing_code(code: str, user: User, quantity: int = 1) -> dict:
     """Pistoleo único de la mesa de empaque (FLUJO_NEGOCIO.md §4, paso 6).
@@ -960,15 +976,16 @@ def scan_packing_code(code: str, user: User, quantity: int = 1) -> dict:
     El operador dispara siempre al mismo endpoint y el sistema deduce qué hacer
     según lo que trae el código, para que no tenga que elegir modo en pantalla:
 
-    - Boleta del morral (OT, ref o código de control): tres disparos sucesivos
-      sobre el mismo morral lo abren, lo cierran y lo despachan.
+    - Boleta del morral (OT, ref o código de control): el primer disparo lo
+      abre, el segundo lo cierra. Un tercer disparo sobre un morral ya cerrado
+      ya no hace nada aquí — el despacho (`dispatch_order`) es un módulo
+      aparte, para que la mesa de empaque no dependa de un cuarto estado
+      físico distinto (dejar el morral en el andén vs. sacarlo de planta).
     - Etiqueta lavable de una prenda (`P1005-TOA`): abre el morral si hacía
       falta y marca la prenda en el mismo gesto.
 
     Cerrar es `finish_packing`, así que el morral queda Completo o Incompleto
     según lo que se alcanzó a pistolear — nunca por una decisión manual.
-    Despachar es `dispatch_order`, y ocurre desde cualquiera de esos dos: el
-    morral incompleto también viaja, con su faltante anotado.
     """
     code = code.strip()
     if not code:
@@ -1027,9 +1044,9 @@ def scan_packing_code(code: str, user: User, quantity: int = 1) -> dict:
         order = find_open_order(code)
     except LaundryOrder.DoesNotExist:
         try:
-            # O el morral se cerró Completo en un disparo anterior y sigue en
-            # el andén, o la guía ya se despachó y quedó una prenda resuelta
-            # esperando su envío aparte. En ambos casos este disparo despacha.
+            # Sigue existiendo y tiene algo pendiente de despacho (cerrado en
+            # el andén, o despachado con una prenda resuelta sin enviar), pero
+            # eso ya no se resuelve pistoleando en la mesa de empaque.
             order = find_dispatchable_order(code)
         except LaundryOrder.DoesNotExist:
             # Existe pero ya salió de planta: vale la pena decirlo con el estado
@@ -1039,26 +1056,22 @@ def scan_packing_code(code: str, user: User, quantity: int = 1) -> dict:
                 f'La guía {order.order_number or order.reference} está '
                 f'{OrderStatus(order.status).label} y su morral ya no está en planta.'
             ) from None
+        raise OrderFlowError(
+            f'La guía {order.order_number or order.reference} ya está '
+            f'{OrderStatus(order.status).label} y lista para despacho. '
+            'Pistoléala en el módulo Despacho, no en la mesa de empaque.'
+        ) from None
 
     locked = LaundryOrder.objects.select_for_update().get(pk=order.id)
     if locked.status == OrderStatus.RECEIVED:
         _advance_status(locked, OrderStatus.QUALITY_CHECK, user, note='Morral abierto por pistoleo de boleta.')
         action = PACKING_ACTION_OPENED
-    elif locked.status == OrderStatus.QUALITY_CHECK:
-        # El morral ya estaba abierto: este segundo disparo lo cierra.
+    else:
+        # QUALITY_CHECK es el único estado que puede llegar hasta acá: el
+        # morral ya estaba abierto, así que este segundo disparo lo cierra.
         # `finish_packing` decide Completa o Incompleta según lo pistoleado.
         finish_packing(order.id, user=user)
         action = PACKING_ACTION_CLOSED
-    else:
-        # COMPLETA o INCOMPLETA: el morral ya está cerrado, así que este tercer
-        # disparo lo despacha. Incluso incompleto: la prenda que falte se sigue
-        # resolviendo pistoleando SU etiqueta, que trae separador y por eso no
-        # llega nunca hasta acá.
-        #
-        # DESPACHADA: la guía ya viajó y esto es el envío aparte de la prenda
-        # que apareció después. `dispatch_order` distingue los dos casos.
-        dispatch_order(order.id, user=user)
-        action = PACKING_ACTION_DISPATCHED
     return {'action': action, 'order': get_order(order.id), 'progress': get_packing_progress(order.id)}
 
 

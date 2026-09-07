@@ -1,11 +1,13 @@
-"""Verifica los tres pistoleos de la boleta: abrir, cerrar y despachar.
+"""Verifica el empaque (abrir/cerrar) y el despacho como módulo aparte.
 
 Se ejecuta con:  python manage.py shell < scripts/check_dispatch_flow.py
 
 Monta un escenario completo dentro de una transacción que SIEMPRE se revierte.
-Cubre el paso 7 (despacho) recién separado del cierre del morral: antes CERRAR
-y DESPACHAR eran el mismo COMPLETADA, y un tercer disparo de la boleta era un
-error. Ver `scan_packing_code` y `dispatch_order` en orders/services.py.
+Cubre la separación del despacho (paso 7) de la mesa de empaque: pistolear la
+boleta ahí abre y cierra el morral nada más, un tercer disparo ya no despacha
+y solo avisa que hay que ir al módulo Despacho, que despacha por
+`POST /{id}/dispatch`. Ver `scan_packing_code` y `dispatch_order` en
+orders/services.py.
 """
 
 from django.conf import settings
@@ -61,9 +63,15 @@ def run() -> bool:
             content_type='application/json', **auth,
         )
 
+    def despachar(order_id: int):
+        return http.post(
+            f'/api/orders/{order_id}/dispatch', data={'note': ''},
+            content_type='application/json', **auth,
+        )
+
     ok = True
 
-    # --- 1. Morral completo: abrir -> prenda -> cerrar -> despachar ---------
+    # --- 1. Morral completo: abrir -> prenda -> cerrar -> Despacho ----------
     g1 = nueva_guia('__D1')
     r = pistolear('__D1')
     g1.refresh_from_db()
@@ -84,16 +92,24 @@ def run() -> bool:
 
     r = pistolear('__D1')
     g1.refresh_from_db()
-    ok &= check('3er disparo despacha el morral', r.status_code == 200 and r.json()['action'] == 'DESPACHADA',
-                f'{r.status_code} {r.json().get("action") or r.json()}')
+    ok &= check('3er disparo en empaque YA NO despacha', r.status_code == 400, str(r.status_code))
+    ok &= check('   el error nombra el estado y manda a Despacho',
+                'Completa' in r.json().get('detail', '') and 'Despacho' in r.json().get('detail', ''),
+                r.json().get('detail', ''))
+    ok &= check('   sigue COMPLETADA, nadie la despachó sola', g1.status == OrderStatus.COMPLETED, g1.status)
+
+    r = despachar(g1.id)
+    g1.refresh_from_db()
+    ok &= check('El módulo Despacho despacha por id', r.status_code == 200, str(r.status_code))
     ok &= check('   queda DESPACHADA', g1.status == OrderStatus.DISPATCHED, g1.status)
     ok &= check('   con dispatched_at y dispatched_by', g1.dispatched_at is not None and g1.dispatched_by_id == user.id)
 
     r = pistolear('__D1')
-    ok &= check('4to disparo ya no hace nada', r.status_code == 400, str(r.status_code))
+    ok &= check('Pistolear en empaque una guía ya despachada tampoco hace nada',
+                r.status_code == 400, str(r.status_code))
     ok &= check('   el error nombra el estado', 'Despachada' in r.json().get('detail', ''), r.json().get('detail', ''))
 
-    # --- 2. Morral incompleto: se cierra incompleto y se despacha igual ----
+    # --- 2. Morral incompleto: se cierra incompleto y Despacho lo saca igual
     g2 = nueva_guia('__D2', cantidad=2)
     pistolear('__D2')                 # abre
     pistolear('__D2-__TOA')           # solo 1 de 2 prendas
@@ -103,10 +119,11 @@ def run() -> bool:
     ok &= check('   con incomplete_at', g2.incomplete_at is not None)
 
     r = pistolear('__D2')
+    ok &= check('3er disparo tampoco despacha el incompleto', r.status_code == 400, str(r.status_code))
+
+    r = despachar(g2.id)
     g2.refresh_from_db()
-    ok &= check('La boleta despacha el morral incompleto',
-                r.status_code == 200 and r.json()['action'] == 'DESPACHADA',
-                f'{r.status_code} {r.json().get("action") or r.json()}')
+    ok &= check('El módulo Despacho despacha el morral incompleto', r.status_code == 200, str(r.status_code))
     ok &= check('   queda DESPACHADA conservando incomplete_at',
                 g2.status == OrderStatus.DISPATCHED and g2.incomplete_at is not None, g2.status)
 
@@ -121,16 +138,18 @@ def run() -> bool:
     ok &= check('   con la resolución registrada',
                 g2.missing_item_resolutions.filter(resolution_type='ENCONTRADA').exists())
 
-    # --- 3b. La prenda resuelta viaja en su propio envío -------------------
+    # --- 3b. La prenda resuelta viaja en su propio envío, también por Despacho
     pendiente = g2.missing_item_resolutions.filter(shipped_at__isnull=True)
     ok &= check('La prenda resuelta queda pendiente de envío', pendiente.count() == 1,
                 str(pendiente.count()))
 
     r = pistolear('__D2')
+    ok &= check('Pistolear en empaque no envía la prenda pendiente (eso es de Despacho)',
+                r.status_code == 400, str(r.status_code))
+
+    r = despachar(g2.id)
     g2.refresh_from_db()
-    ok &= check('La boleta despacha la prenda en envío aparte',
-                r.status_code == 200 and r.json()['action'] == 'DESPACHADA',
-                f'{r.status_code} {r.json().get("action") or r.json()}')
+    ok &= check('El módulo Despacho envía la prenda en su envío aparte', r.status_code == 200, str(r.status_code))
     ok &= check('   la guía sigue DESPACHADA (no cambia de estado)',
                 g2.status == OrderStatus.DISPATCHED, g2.status)
     ok &= check('   la resolución queda sellada con shipped_at',
@@ -138,8 +157,8 @@ def run() -> bool:
     ok &= check('   el envío queda en el historial',
                 g2.status_history.filter(note__icontains='envío aparte').exists())
 
-    r = pistolear('__D2')
-    ok &= check('Sin prendas pendientes, la boleta ya no despacha nada', r.status_code == 400,
+    r = despachar(g2.id)
+    ok &= check('Sin prendas pendientes, Despacho ya no tiene nada que hacer', r.status_code == 400,
                 str(r.status_code))
 
     # --- 4. Recepción en faena exige despacho ------------------------------
@@ -151,23 +170,21 @@ def run() -> bool:
                   content_type='application/json', **auth)
     ok &= check('Faena rechaza un morral sin despachar', r.status_code == 400, str(r.status_code))
 
-    pistolear('__D3')                 # despacha
+    despachar(g3.id)                  # despacha, ahora desde Despacho
     r = http.post(f'/api/orders/{g3.id}/clean-reception', data={'note': ''},
                   content_type='application/json', **auth)
     ok &= check('Faena acepta el morral despachado', r.status_code == 200, str(r.status_code))
 
-    # --- 5. Endpoint de despacho por id (equivalente del panel) ------------
+    # --- 5. Repetir el despacho sobre una guía recién despachada -----------
     g4 = nueva_guia('__D4')
     pistolear('__D4')
     pistolear('__D4-__TOA')
     pistolear('__D4')                 # cierra
-    r = http.post(f'/api/orders/{g4.id}/dispatch', data={'note': ''},
-                  content_type='application/json', **auth)
+    r = despachar(g4.id)
     g4.refresh_from_db()
     ok &= check('POST /dispatch despacha por id', r.status_code == 200, str(r.status_code))
     ok &= check('   queda DESPACHADA', g4.status == OrderStatus.DISPATCHED, g4.status)
-    r = http.post(f'/api/orders/{g4.id}/dispatch', data={'note': ''},
-                  content_type='application/json', **auth)
+    r = despachar(g4.id)
     ok &= check('POST /dispatch repetido responde 400', r.status_code == 400, str(r.status_code))
 
     print()
