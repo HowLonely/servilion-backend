@@ -74,7 +74,11 @@ services:
       DJANGO_API_URL: http://nginx
       NEXT_PUBLIC_API_URL: https://${API_DOMAIN}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:3000/login"]
+      # 127.0.0.1 y no localhost: en la imagen node:*-alpine, localhost
+      # resuelve primero a ::1 (IPv6) y Next.js solo escucha en IPv4
+      # (HOSTNAME=0.0.0.0), así que con "localhost" el wget siempre falla
+      # con connection refused aunque el server esté sirviendo bien.
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:3000/login"]
       interval: 15s
       timeout: 6s
       retries: 5
