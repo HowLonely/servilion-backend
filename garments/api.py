@@ -13,8 +13,8 @@ router = Router(auth=JWTAuth())
 
 @router.get('/', response=List[GarmentTypeOut])
 @paginate
-def list_garment_types(request, is_active: bool | None = None):
-    return services.list_garment_types(is_active=is_active)
+def list_garment_types(request, is_active: bool | None = None, is_linen: bool | None = None):
+    return services.list_garment_types(is_active=is_active, is_linen=is_linen)
 
 
 @router.get('/{garment_type_id}', response=GarmentTypeOut)

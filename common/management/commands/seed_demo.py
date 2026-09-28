@@ -16,7 +16,7 @@ from authentication.models import User
 from camps.models import Camp, Faena, Room
 from companies.models import Client, ClientGarmentPrice, Company
 from garments.models import GarmentType
-from hospitality.models import BatchStatus, LinenBatch, LinenBatchItem
+from hospitality.models import DispatchCounter, LinenMovement, LinenMovementLine
 from orders.models import (
     LaundryOrder,
     MissingItemResolution,
@@ -82,7 +82,7 @@ class Command(BaseCommand):
         return {
             'Órdenes': LaundryOrder.objects.count(),
             'Pesajes': WeighIn.objects.count(),
-            'Lotes hotelería': LinenBatch.objects.count(),
+            'Movimientos lencería': LinenMovement.objects.count(),
             'Trabajadores': Worker.objects.count(),
             'Empresas': Company.objects.count(),
             'Clientes': Client.objects.count(),
@@ -96,7 +96,8 @@ class Command(BaseCommand):
     def _clear_business_data() -> None:
         LaundryOrder.objects.all().delete()
         WeighIn.objects.all().delete()
-        LinenBatch.objects.all().delete()
+        LinenMovement.objects.all().delete()
+        DispatchCounter.objects.all().delete()
         Worker.objects.all().delete()
         ClientGarmentPrice.objects.all().delete()
         Company.objects.all().delete()
@@ -175,7 +176,8 @@ class Command(BaseCommand):
             ('TOA', 'Toalla'),
             ('SAB', 'Sábana'),
         ):
-            garments[code] = GarmentType.objects.create(code=code, name=name)
+            # Toalla y sábana circulan también como lencería de hotelería.
+            garments[code] = GarmentType.objects.create(code=code, name=name, is_linen=code in ('TOA', 'SAB'))
 
         price_maps = {
             'room': {'CAM': '4200', 'PAN': '4800', 'OVE': '6900', 'CHA': '7500', 'TOA': '2100'},
@@ -380,27 +382,51 @@ class Command(BaseCommand):
 
     @staticmethod
     def _create_hospitality(now, company, camps, garments, users):
-        specs = (
-            ('H-2026-0001', BatchStatus.RECEIVED, 0, None),
-            ('H-2026-0002', BatchStatus.IN_PROCESS, 2, (118, 78)),
-            ('H-2026-0003', BatchStatus.DISPATCHED, 5, (116, 77)),
-        )
-        for number, status, days_ago, counts in specs:
-            batch = LinenBatch.objects.create(
-                batch_number=number, company=company, camp=camps['central'], status=status,
-                received_at=now - timedelta(days=days_ago, hours=3),
-                promised_at=now - timedelta(days=days_ago) + timedelta(days=4),
-                dispatched_at=now - timedelta(days=1) if status == BatchStatus.DISPATCHED else None,
-                weight_kg=Decimal('286.50'), observations='Lote demo de hotelería.',
-                received_by=users['supervisor'],
-                dispatched_by=users['packing'] if status == BatchStatus.DISPATCHED else None,
-                received_by_client='Encargado de hotelería' if status == BatchStatus.DISPATCHED else '',
+        """Stock rotativo de lencería con todos los movimientos y un saldo negativo.
+
+        El campamento Norte termina con toallas en negativo a propósito: es el
+        aviso que la web muestra para pedir un conteo de inventario.
+        """
+        sheet, towel = garments['SAB'], garments['TOA']
+
+        def movement(kind, days_ago, lines, camp=None, number='', user=None, hours=0, **extra):
+            record = LinenMovement.objects.create(
+                kind=kind, company=company, camp=camp, number=number,
+                occurred_at=now - timedelta(days=days_ago, hours=hours),
+                registered_by=user, **extra,
             )
-            LinenBatchItem.objects.create(
-                batch=batch, garment_type=garments['SAB'], quantity_in=120,
-                quantity_out=counts[0] if counts else None, weight_kg=Decimal('210.00'),
+            LinenMovementLine.objects.bulk_create(
+                LinenMovementLine(movement=record, garment_type=garment_type, quantity=quantity, difference=difference)
+                for garment_type, quantity, difference in lines
             )
-            LinenBatchItem.objects.create(
-                batch=batch, garment_type=garments['TOA'], quantity_in=80,
-                quantity_out=counts[1] if counts else None, weight_kg=Decimal('76.50'),
-            )
+            return record
+
+        field = {'latitude': Decimal('-23.650000'), 'longitude': Decimal('-70.400000'), 'accuracy_meters': 8.0}
+        Kind = LinenMovement.Kind
+
+        # Carga inicial: el primer conteo de cada campamento.
+        movement(Kind.COUNT, 6, [(sheet, 120, 120), (towel, 80, 80)], camp=camps['central'], user=users['admin'],
+                 note='Carga inicial.')
+        movement(Kind.COUNT, 6, [(sheet, 100, 100), (towel, 60, 60)], camp=camps['norte'], user=users['admin'],
+                 note='Carga inicial.')
+
+        movement(Kind.COLLECTION, 4, [(sheet, 30, None), (towel, 20, None)], camp=camps['central'],
+                 user=users['supervisor'], **field)
+        movement(Kind.COLLECTION, 4, [(sheet, 25, None)], camp=camps['norte'], user=users['supervisor'], **field)
+
+        movement(Kind.DISPATCH, 2, [(sheet, 50, None), (towel, 20, None)], number=f'HD-{now.year}-0001',
+                 user=users['packing'])
+
+        movement(Kind.DISTRIBUTION, 1, [(sheet, 30, None), (towel, 15, None)], camp=camps['central'],
+                 user=users['supervisor'], **field)
+        movement(Kind.DISTRIBUTION, 1, [(sheet, 15, None)], camp=camps['norte'], user=users['supervisor'], **field)
+        # Un reparto que se registró dos veces y el administrador anuló.
+        movement(Kind.DISTRIBUTION, 1, [(sheet, 15, None)], camp=camps['norte'], user=users['supervisor'],
+                 hours=-1, voided_at=now - timedelta(hours=20), voided_by=users['admin'],
+                 void_reason='Registrado dos veces.', **field)
+
+        # Se retiran más toallas de las que el sistema cree que hay en Norte.
+        movement(Kind.COLLECTION, 0, [(towel, 65, None)], camp=camps['norte'], user=users['supervisor'],
+                 hours=3, **field)
+
+        DispatchCounter.objects.create(year=now.year, last_number=1)

@@ -5,6 +5,7 @@ class GarmentTypeIn(Schema):
     code: str
     name: str
     is_active: bool = True
+    is_linen: bool = False
 
 
 class GarmentTypeOut(Schema):
@@ -12,3 +13,4 @@ class GarmentTypeOut(Schema):
     code: str
     name: str
     is_active: bool
+    is_linen: bool

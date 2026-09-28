@@ -64,20 +64,23 @@ CASES = [
     ('Torre de control', 'get', '/api/reports/operations/summary', None,
      {'ADMIN', 'SUPERVISOR'}),
 
-    # Hoteleria reparte sus tres momentos entre los mismos puestos que el morral,
-    # salvo el despacho: ahi se fija la merma definitiva del lote y queda en el
-    # supervisor.
-    ('Recibir carga de lenceria', 'post', '/api/hospitality/',
-     {'company_id': 999999, 'items': [{'quantity_in': 1, 'custom_name': 'X'}]},
-     {'ADMIN', 'SUPERVISOR', 'DIGITADOR_OT'}),
+    # Hoteleria es un stock rotativo: la planta despacha, el supervisor reparte
+    # y retira en faena (app movil) y el administrador cuenta y anula.
+    ('Despachar lenceria a faena', 'post', '/api/hospitality/dispatches',
+     {'company_id': 999999, 'lines': []},
+     {'ADMIN', 'DIGITADOR_EMPAQUE'}),
 
-    ('Contar salida de lenceria', 'post', '/api/hospitality/999999/return-count',
-     {'counts': []},
-     {'ADMIN', 'SUPERVISOR', 'DIGITADOR_EMPAQUE'}),
-
-    ('Despachar lote de lenceria', 'post', '/api/hospitality/999999/dispatch',
-     {'received_by_client': '', 'note': ''},
+    ('Sincronizar reparto/retiro de lenceria', 'post', '/api/hospitality/field-sync',
+     {'movements': []},
      {'ADMIN', 'SUPERVISOR'}),
+
+    ('Conteo de inventario de lenceria', 'post', '/api/hospitality/counts',
+     {'company_id': 999999, 'lines': []},
+     {'ADMIN'}),
+
+    ('Anular movimiento de lenceria', 'post', '/api/hospitality/movements/999999/void',
+     {'reason': 'X'},
+     {'ADMIN'}),
 
     ('Conflictos de sincronización', 'get', '/api/orders/sync-conflicts', None,
      {'ADMIN'}),
