@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'orders',
     'hospitality',
     'weighing',
+    'sync',
 ]
 
 MIDDLEWARE = [
@@ -62,6 +63,9 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Solo actúa en el servidor local: el histórico fuera de la ventana de 90
+    # días se consulta en la nube (ver sync/proxy.py).
+    'sync.proxy.EdgeHistoryProxyMiddleware',
 ]
 
 ROOT_URLCONF = 'core.urls'
@@ -130,7 +134,31 @@ CACHES = {
         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
         'LOCATION': REDIS_URL,
     }
+} if REDIS_URL else {
+    # El servidor local de planta no levanta Redis: no corre Celery y el único
+    # uso de caché (reportería) no se sirve desde ahí.
+    'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}
 }
+
+
+# --- Nodo: nube o servidor local de planta (ver common/node.py y sync/) ---
+SERVILION_NODE = env('SERVILION_NODE', default='cloud')
+# Pesaje, digitalización, empaque y despachos. Por defecto solo en el servidor
+# local; en desarrollo se puede habilitar en un backend "cloud" con la variable.
+ALLOW_PLANT_OPERATIONS = env.bool('ALLOW_PLANT_OPERATIONS', default=SERVILION_NODE == 'edge')
+
+# Servidor local: a qué nube se sincroniza y con qué credencial de nodo.
+SYNC_CLOUD_URL = env('SYNC_CLOUD_URL', default='').rstrip('/')
+SYNC_NODE_TOKEN = env('SYNC_NODE_TOKEN', default='')
+# Primer ID que usa el servidor local en las tablas sincronizadas. La nube
+# numera por debajo y el servidor local por encima, así una fila conserva el
+# mismo ID en los dos lados y la terminal, la web y la app hablan de la misma.
+SYNC_EDGE_ID_START = env.int('SYNC_EDGE_ID_START', default=1_000_000_000_000)
+# Días de guías y pesajes que el servidor local conserva. Lo anterior se
+# consulta en la nube cuando hay internet.
+SYNC_LOCAL_RETENTION_DAYS = env.int('SYNC_LOCAL_RETENTION_DAYS', default=90)
+SYNC_PULL_INTERVAL_SECONDS = env.int('SYNC_PULL_INTERVAL_SECONDS', default=5)
+SYNC_HTTP_TIMEOUT_SECONDS = env.int('SYNC_HTTP_TIMEOUT_SECONDS', default=20)
 
 
 # --- CORS (panel Next.js) ---

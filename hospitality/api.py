@@ -5,8 +5,8 @@ from ninja import Router
 from ninja.pagination import paginate
 
 from authentication.auth import JWTAuth
-from authentication.models import User
-from authentication.permissions import require_admin, require_roles
+from authentication.permissions import Perm, require_permission
+from common.node import plant_only
 from common.schemas import MessageOut
 from hospitality import services
 from hospitality.schemas import (
@@ -58,7 +58,8 @@ def list_movements(
 
 
 @router.post('/dispatches', response={201: LinenMovementOut, 400: MessageOut})
-@require_roles(User.Role.DIGITADOR_EMPAQUE)
+@require_permission(Perm.LINEN_DISPATCH)
+@plant_only
 def register_dispatch(request, payload: DispatchIn):
     """Despacho de lencería limpia desde la planta a la faena del cliente."""
     try:
@@ -71,7 +72,7 @@ def register_dispatch(request, payload: DispatchIn):
 
 
 @router.post('/counts', response={201: LinenMovementOut, 400: MessageOut})
-@require_admin()
+@require_permission(Perm.LINEN_MANAGE)
 def register_count(request, payload: CountIn):
     """Conteo de inventario de un campamento o de la bodega de faena."""
     try:
@@ -84,7 +85,7 @@ def register_count(request, payload: CountIn):
 
 
 @router.post('/field-sync', response=FieldMovementBatchOut)
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.FIELD_LINEN)
 def sync_field_movements(request, payload: FieldMovementBatchIn):
     """Cola de repartos y retiros que la app móvil registró en faena.
 
@@ -111,7 +112,7 @@ def get_dispatch_print_job(request, movement_id: int):
 
 
 @router.post('/movements/{movement_id}/void', response={200: LinenMovementOut, 400: MessageOut})
-@require_admin()
+@require_permission(Perm.LINEN_MANAGE)
 def void_movement(request, movement_id: int, payload: VoidMovementIn):
     """Anula un movimiento mal registrado; su efecto sale de los saldos."""
     try:

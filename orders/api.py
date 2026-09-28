@@ -5,8 +5,8 @@ from ninja import Router
 from ninja.pagination import paginate
 
 from authentication.auth import JWTAuth
-from authentication.models import User
-from authentication.permissions import require_admin, require_roles
+from authentication.permissions import Perm, require_permission
+from common.node import plant_only
 from common.schemas import MessageOut
 from orders import services
 from orders.models import LaundryOrder
@@ -72,7 +72,8 @@ def list_orders(
 
 
 @router.post('/', response={201: LaundryOrderOut})
-@require_roles(User.Role.DIGITADOR_OT, User.Role.SUPERVISOR)
+@require_permission(Perm.DIGITIZE)
+@plant_only
 def create_order(request, payload: LaundryOrderIn):
     """Digitalización de la OT física al llegar el morral a Antofagasta (paso 4)."""
     order = services.create_order(payload, received_by=request.auth)
@@ -80,7 +81,7 @@ def create_order(request, payload: LaundryOrderIn):
 
 
 @router.post('/scan/site-reception', response={201: SiteScanOut})
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.FIELD_ORDERS)
 def register_site_reception(request, payload: SiteScanIn):
     """Pistoleo del morral sucio en faena (paso 2), previo a la digitalización."""
     scan = services.register_site_reception(
@@ -93,7 +94,8 @@ def register_site_reception(request, payload: SiteScanIn):
     '/scan/packing',
     response={200: PackingScanOut, 400: MessageOut, 404: MessageOut, 409: AmbiguousReferenceOut},
 )
-@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
+@require_permission(Perm.PACK)
+@plant_only
 def scan_packing_code(request, payload: PackingCodeScanIn):
     """Pistoleo único de la mesa de empaque (paso 6).
 
@@ -132,7 +134,8 @@ def scan_packing_code(request, payload: PackingCodeScanIn):
     '/scan/dispatch',
     response={200: LaundryOrderOut, 400: MessageOut, 404: MessageOut, 409: AmbiguousReferenceOut},
 )
-@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
+@require_permission(Perm.DISPATCH)
+@plant_only
 def scan_dispatch_code(request, payload: DispatchScanIn):
     """Pistoleo único del módulo Despacho (paso 7).
 
@@ -180,7 +183,7 @@ def get_counters(request, date_from: datetime | None = None, date_to: datetime |
 
 
 @router.get('/sync-conflicts', response=List[SyncConflictOut])
-@require_admin()
+@require_permission(Perm.SYNC)
 @paginate
 def list_sync_conflicts(request, resolved: bool | None = None):
     """Cambios de la app móvil descartados por antigüedad, para revisión del administrador."""
@@ -188,12 +191,13 @@ def list_sync_conflicts(request, resolved: bool | None = None):
 
 
 @router.post('/sync-conflicts/{conflict_id}/resolve', response=SyncConflictOut)
-@require_admin()
+@require_permission(Perm.SYNC)
 def resolve_sync_conflict(request, conflict_id: int, payload: NoteIn):
     return services.resolve_sync_conflict(conflict_id, user=request.auth, note=payload.note)
 
 
 @router.post('/sync', response=OrderSyncBatchOut)
+@plant_only
 def sync_orders(request, payload: OrderSyncBatchIn):
     """Sincronización masiva en lote desde la app móvil offline-first."""
     results = services.sync_batch(payload.orders)
@@ -247,7 +251,8 @@ def get_packing_progress(request, order_id: int):
 
 
 @router.post('/{order_id}/packing/scan', response={200: PackingProgressOut, 400: MessageOut})
-@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
+@require_permission(Perm.PACK)
+@plant_only
 def scan_packed_garment(request, order_id: int, payload: PackingScanIn):
     """Suma una prenda pistoleada al morral limpio durante el empaque (paso 6)."""
     try:
@@ -257,7 +262,8 @@ def scan_packed_garment(request, order_id: int, payload: PackingScanIn):
 
 
 @router.post('/{order_id}/packing/finish', response={200: LaundryOrderOut, 400: MessageOut})
-@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
+@require_permission(Perm.PACK)
+@plant_only
 def finish_packing(request, order_id: int, payload: NoteIn):
     """Cierra el empaque: completa la guía o la marca incompleta según el pistoleo."""
     try:
@@ -268,7 +274,8 @@ def finish_packing(request, order_id: int, payload: NoteIn):
 
 
 @router.post('/{order_id}/dispatch', response={200: LaundryOrderOut, 400: MessageOut})
-@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
+@require_permission(Perm.DISPATCH)
+@plant_only
 def dispatch_order(request, order_id: int, payload: NoteIn):
     """Despacha a faena un morral ya cerrado (paso 7).
 
@@ -282,7 +289,8 @@ def dispatch_order(request, order_id: int, payload: NoteIn):
 
 
 @router.post('/{order_id}/incomplete/resolve', response={200: LaundryOrderOut, 400: MessageOut})
-@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
+@require_permission(Perm.PACK)
+@plant_only
 def resolve_missing_item(request, order_id: int, payload: ResolveMissingItemIn):
     """Resuelve una prenda faltante de una guía Incompleta: encontrada (pistoleo) o comprada (costo)."""
     try:
@@ -295,7 +303,7 @@ def resolve_missing_item(request, order_id: int, payload: ResolveMissingItemIn):
 
 
 @router.post('/{order_id}/clean-reception', response={200: LaundryOrderOut, 400: MessageOut})
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.FIELD_ORDERS)
 def confirm_clean_reception(request, order_id: int, payload: NoteIn):
     """El supervisor en faena confirma que el morral limpio llegó correcto (paso 8)."""
     try:
@@ -305,7 +313,7 @@ def confirm_clean_reception(request, order_id: int, payload: NoteIn):
 
 
 @router.post('/{order_id}/deliver', response={200: LaundryOrderOut, 400: MessageOut})
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.FIELD_ORDERS)
 def register_delivery(request, order_id: int, payload: NoteIn):
     """Entrega del morral al trabajador en su habitación (paso 9, Flujo 1)."""
     try:

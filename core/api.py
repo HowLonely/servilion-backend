@@ -5,15 +5,17 @@ from django.http import Http404
 from ninja import NinjaAPI
 from ninja.errors import ValidationError
 
-from authentication.api import router as auth_router
+from authentication.api import roles_router, router as auth_router, users_router
 from authentication.permissions import PermissionDenied
 from companies.api import clients_router, router as companies_router
+from common.node import PlantOnlyOperation
 from camps.api import camps_router, faenas_router, rooms_router
 from garments.api import router as garments_router
 from hospitality.api import router as hospitality_router
 from orders.api import router as orders_router
 from orders.delivery_api import router as delivery_router
 from orders.report_api import router as reports_router
+from sync.api import router as sync_router
 from weighing.api import router as weighing_router
 from workers.api import router as workers_router
 
@@ -36,6 +38,13 @@ def permission_denied_handler(request, exc):
     return api.create_response(request, {'detail': str(exc)}, status=403)
 
 
+@api.exception_handler(PlantOnlyOperation)
+def plant_only_handler(request, exc):
+    # 409 y no 403: el usuario sí tiene el permiso, lo que no corresponde es
+    # hacerlo contra este servidor.
+    return api.create_response(request, {'detail': str(exc)}, status=409)
+
+
 @api.exception_handler(ValidationError)
 def validation_error_handler(request, exc):
     return api.create_response(request, {'detail': 'Datos inválidos.', 'errors': exc.errors}, status=422)
@@ -50,6 +59,8 @@ def unhandled_exception_handler(request, exc):
 
 
 api.add_router('/auth/', auth_router, tags=['Autenticación'])
+api.add_router('/users/', users_router, tags=['Usuarios'])
+api.add_router('/roles/', roles_router, tags=['Roles'])
 api.add_router('/clients/', clients_router, tags=['Clientes'])
 api.add_router('/companies/', companies_router, tags=['Empresas'])
 api.add_router('/workers/', workers_router, tags=['Trabajadores'])
@@ -62,3 +73,4 @@ api.add_router('/orders/', orders_router, tags=['Guías'])
 api.add_router('/delivery/', delivery_router, tags=['Entrega en habitación'])
 api.add_router('/hospitality/', hospitality_router, tags=['Hotelería'])
 api.add_router('/reports/', reports_router, tags=['Reportes'])
+api.add_router('/sync/', sync_router, tags=['Sincronización'])

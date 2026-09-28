@@ -4,7 +4,7 @@ from ninja import Router
 from ninja.pagination import paginate
 
 from authentication.auth import JWTAuth
-from authentication.permissions import require_admin
+from authentication.permissions import Perm, require_permission
 from garments import services
 from garments.schemas import GarmentTypeIn, GarmentTypeOut
 
@@ -23,12 +23,12 @@ def get_garment_type(request, garment_type_id: int):
 
 
 @router.post('/', response={201: GarmentTypeOut})
-@require_admin()
+@require_permission(Perm.CATALOG)
 def create_garment_type(request, payload: GarmentTypeIn):
     return 201, services.create_garment_type(payload)
 
 
 @router.put('/{garment_type_id}', response=GarmentTypeOut)
-@require_admin()
+@require_permission(Perm.CATALOG)
 def update_garment_type(request, garment_type_id: int, payload: GarmentTypeIn):
     return services.update_garment_type(garment_type_id, payload)

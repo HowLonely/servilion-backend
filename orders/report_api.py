@@ -13,7 +13,7 @@ from ninja.pagination import paginate
 
 from authentication.auth import JWTAuth
 from authentication.models import User
-from authentication.permissions import require_roles
+from authentication.permissions import Perm, require_permission
 from orders import report_services as svc
 from orders.report_schemas import (
     GarmentParetoOut,
@@ -48,7 +48,7 @@ def _filters(
 # --- Dashboard 1: Torre de Control Operacional -----------------------------
 
 @router.get('/operations/summary', response=OperationsSummaryOut)
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.REPORTS)
 def operations_summary(
     request,
     company_id: int | None = None,
@@ -62,7 +62,7 @@ def operations_summary(
 
 
 @router.get('/operations/stalled', response=List[StalledOrderOut])
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.REPORTS)
 @paginate
 def operations_stalled(
     request,
@@ -77,7 +77,7 @@ def operations_stalled(
 
 
 @router.get('/operations/timeseries', response=TimeseriesOut)
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.REPORTS)
 def operations_timeseries(
     request,
     granularity: str = 'day',
@@ -94,7 +94,7 @@ def operations_timeseries(
 # --- Dashboard 3: Calidad e Incidencias ------------------------------------
 
 @router.get('/quality/summary', response=QualitySummaryOut)
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.REPORTS)
 def quality_summary(
     request,
     company_id: int | None = None,
@@ -108,7 +108,7 @@ def quality_summary(
 
 
 @router.get('/quality/garment-pareto', response=GarmentParetoOut)
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.REPORTS)
 def quality_pareto(
     request,
     company_id: int | None = None,
@@ -122,7 +122,7 @@ def quality_pareto(
 
 
 @router.get('/quality/incidents', response=List[IncidentOut])
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.REPORTS)
 @paginate
 def quality_incidents(
     request,

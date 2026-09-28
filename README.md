@@ -50,7 +50,20 @@ La lencería de hotelería (sábanas, toallas…) es un **stock del cliente que 
 * **Campamentos y habitaciones**, con **QR por puerta** e impresión de etiquetas para pegarlas.
 * **Trabajadores**, **catálogo de prendas** y **precios por cliente**.
 * **Reportería**: torre de control operativa (resumen, series de tiempo, guías atascadas) y panel de calidad e incidencias.
-* **Autenticación JWT** con cuatro roles operativos: `ADMIN`, `SUPERVISOR`, `DIGITADOR_OT` y `DIGITADOR_EMPAQUE`.
+* **Autenticación JWT** con roles editables y permisos por acción (ver abajo).
+
+### 🏭 Nube y servidor local de planta
+
+El mismo backend corre en dos lugares (`SERVILION_NODE`):
+
+* **Nube** (`api.servilion.cl`, `cloud`): panel web y app móvil. Rechaza con 409 pesaje, digitalización, empaque y despachos.
+* **Servidor local** de la planta (`edge`, repo `servilion-local`): las terminales Servilion Desktop trabajan contra él, con o sin internet. Es el único que emite `ref` y números `HD-`.
+
+Los dos se sincronizan solos en segundos (triggers de PostgreSQL + `manage.py sync_worker`). Diseño completo en [`sync/README.md`](sync/README.md).
+
+### 👥 Usuarios, roles y permisos
+
+Los roles son editables: cada uno es una lista de permisos (`authentication/permissions.py`) que se administra desde el panel web o la terminal (`/api/users/`, `/api/roles/`). Los endpoints exigen permisos (`require_permission`), no roles. El rol Administrador tiene siempre todos.
 
 ### 🔌 Superficie de la API
 

@@ -1,5 +1,11 @@
 # Usuarios de staff por rol
 
+> **Los roles ahora son editables.** Cada rol es una lista de permisos
+> (`authentication/permissions.py`) que se administra en Configuración → Roles,
+> en el panel web o en la terminal. Las cinco cuentas de abajo usan los roles de
+> sistema, sembrados con los permisos equivalentes a la matriz de §2. Usuarios y
+> roles se crean en `/api/users/` y `/api/roles/` (permiso `users.manage`).
+
 Cuentas de **desarrollo** para recorrer el flujo completo (`FLUJO_NEGOCIO.md` §4)
 viendo lo que ve cada puesto real. Existen porque con una sola cuenta `ADMIN` no
 se prueba nada: `ADMIN` atraviesa toda restricción de rol
