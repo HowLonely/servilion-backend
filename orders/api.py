@@ -55,11 +55,13 @@ def list_orders(
     search: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    service_type: str | None = None,
 ):
     # Paginado obligatorio: el histórico legado ronda las 280.000 guías, así que
     # un listado sin límite no es viable ni siquiera con filtros laxos.
     return services.list_orders(
         status=status,
+        service_type=service_type,
         company_id=company_id,
         client_id=client_id,
         worker_id=worker_id,

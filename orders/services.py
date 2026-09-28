@@ -24,6 +24,7 @@ from orders.models import (
     OrderStatus,
     OrderStatusHistory,
     ReferenceCounter,
+    ServiceType,
     SiteScan,
     SyncConflict,
 )
@@ -286,6 +287,9 @@ def create_order(payload: LaundryOrderIn, received_by: User) -> LaundryOrder:
         # El peso lo puso la báscula; el digitador solo lo sobrescribe si tipea
         # uno distinto (mismo criterio que con las prendas: manda el digitador).
         weight_kg=payload.weight_kg if payload.weight_kg is not None else (weigh_in.weight_kg if weigh_in else None),
+        # Express se decide en la báscula y consumió cupo ahí; la guía solo lo
+        # hereda para que empaque, despacho y la web lo vean.
+        service_type=weigh_in.service_type if weigh_in else ServiceType.NORMAL,
         received_at=payload.received_at,
         laundry_received_at=laundry_received_at,
         promised_at=payload.promised_at or calculate_promised_at(shift, laundry_received_at),
@@ -343,12 +347,15 @@ def list_orders(
     search: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    service_type: str | None = None,
 ) -> QuerySet[LaundryOrder]:
     queryset = LaundryOrder.objects.select_related(
         'worker', 'company', 'company__client', 'delivery_room', 'delivery_room__camp', 'weigh_in'
     ).prefetch_related('items__garment_type')
     if status:
         queryset = queryset.filter(status=status)
+    if service_type:
+        queryset = queryset.filter(service_type=service_type)
     if company_id is not None:
         queryset = queryset.filter(company_id=company_id)
     # Filtro por cliente: agrega todas las empresas del cliente. En el caso
@@ -1279,6 +1286,7 @@ def build_receipt(order_id: int) -> dict:
         # ropa y si es del mandante o de una contratista.
         'faena': resolve_order_faena_name(order),
         'is_contractor': order.company.is_contractor,
+        'service_type': order.service_type,
         'worker_name': worker.full_name,
         # El comprobante físico trae una casilla de teléfono junto al n° de OT.
         # Casi siempre viene vacía o en "0" (el trabajador no lo anota), pero la

@@ -1,6 +1,19 @@
 from django.contrib import admin
 
-from .models import WeighIn, WeighLabel
+from .models import WeighingSettings, WeighIn, WeighLabel
+
+
+@admin.register(WeighingSettings)
+class WeighingSettingsAdmin(admin.ModelAdmin):
+    list_display = ('express_monthly_limit', 'updated_at', 'updated_by')
+    readonly_fields = ('updated_at', 'updated_by')
+
+    def has_add_permission(self, request):
+        # Fila única: se crea en la migración y solo se edita.
+        return not WeighingSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 class WeighLabelInline(admin.TabularInline):
@@ -13,8 +26,8 @@ class WeighLabelInline(admin.TabularInline):
 
 @admin.register(WeighIn)
 class WeighInAdmin(admin.ModelAdmin):
-    list_display = ('reference', 'client', 'company', 'garment_count', 'weight_kg', 'status', 'weighed_at')
-    list_filter = ('status', 'client')
+    list_display = ('reference', 'client', 'company', 'garment_count', 'weight_kg', 'service_type', 'status', 'weighed_at')
+    list_filter = ('status', 'service_type', 'client')
     search_fields = ('reference', 'company__name', 'client__name')
     date_hierarchy = 'weighed_at'
     autocomplete_fields = ('client', 'company')

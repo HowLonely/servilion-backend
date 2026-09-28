@@ -125,6 +125,8 @@ class LaundryOrderOut(Schema):
     delivery_flow: str
     shift: str
     status: str
+    # "NORMAL" o "EXPRESS", heredado del pesaje (ver `LaundryOrder.service_type`).
+    service_type: str
     garment_count: int
     weight_kg: float | None
     received_at: datetime
@@ -404,6 +406,9 @@ class ReceiptOut(Schema):
     company_logo_url: str | None
     faena: str
     is_contractor: bool
+    # "EXPRESS" se imprime en la boleta: el morral limpio sigue siendo prioritario
+    # en despacho y en faena.
+    service_type: str
     worker_name: str
     phone: str
     national_id: str

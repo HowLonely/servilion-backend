@@ -42,6 +42,19 @@ class OrderStatus(models.TextChoices):
     DELIVERED = 'ENTREGADA', 'Entregada'
 
 
+class ServiceType(models.TextChoices):
+    """Tipo de cargo que se elige en la báscula y viaja con el morral.
+
+    Se declara acá y no en `weighing` porque lo comparten el pesaje y la guía, y
+    la dependencia natural ya es weighing -> orders. Es un choices y no un
+    booleano para que un tercer tipo de servicio no obligue a migrar la columna.
+    """
+
+    NORMAL = 'NORMAL', 'Normal'
+    # Cargo prioritario con cupo mensual global (ver `weighing.WeighingSettings`).
+    EXPRESS = 'EXPRESS', 'Express'
+
+
 class LaundryOrder(TimeStampedModel):
     """Guía de lavandería: unidad de trabajo entre la recepción de ropa sucia y su entrega.
 
@@ -74,6 +87,12 @@ class LaundryOrder(TimeStampedModel):
 
     shift = models.CharField('Turno', max_length=10, blank=True)
     status = models.CharField(max_length=15, choices=OrderStatus.choices, default=OrderStatus.RECEIVED, db_index=True)
+    # Se hereda del pesaje al digitalizar: el cargo express se decide en la
+    # báscula, y copiarlo acá es lo que permite que empaque, despacho y la web
+    # lo vean sin ir a buscar el pesaje. Las guías sin báscula son NORMAL.
+    service_type = models.CharField(
+        'Tipo de cargo', max_length=10, choices=ServiceType.choices, default=ServiceType.NORMAL, db_index=True
+    )
     garment_count = models.PositiveIntegerField(default=0)
     weight_kg = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
 

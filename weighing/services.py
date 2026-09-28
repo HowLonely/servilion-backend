@@ -4,9 +4,10 @@ from django.utils import timezone
 
 from authentication.models import User
 from companies.models import Client, Company
+from orders.models import ServiceType
 from orders.services import GARMENT_LABEL_SEPARATOR, generate_reference
 
-from .models import WeighIn, WeighLabel
+from .models import WeighingSettings, WeighIn, WeighLabel
 
 
 class WeighInError(Exception):
@@ -24,6 +25,71 @@ SEQUENCE_WIDTH = 2
 # tocar un cero de más imprime 120 adhesivos y consume papel de verdad.
 MAX_GARMENT_COUNT = 99
 MAX_WEIGHT_KG = 200
+
+# Techo de cordura del cupo express configurable desde la web, por la misma
+# razón que los topes de arriba: un cero de más no debe dejar el cupo sin límite.
+MAX_EXPRESS_MONTHLY_LIMIT = 100_000
+
+
+def current_month_start():
+    """Medianoche del día 1 del mes en curso, en hora de Chile.
+
+    Se calcula en hora local y no en UTC porque el cupo es "del mes" tal como lo
+    vive la planta: en UTC el mes cambiaría a las 20:00 o 21:00 del último día.
+    """
+    return timezone.localtime().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def count_express_this_month() -> int:
+    """Cargos express del mes que ocupan cupo. Los anulados lo devuelven."""
+    return (
+        WeighIn.objects.filter(service_type=ServiceType.EXPRESS, weighed_at__gte=current_month_start())
+        .exclude(status=WeighIn.Status.VOIDED)
+        .count()
+    )
+
+
+def express_quota() -> dict:
+    """Estado del cupo express que muestra el botón de la báscula (`EXPRESS 10/300`)."""
+    limit = WeighingSettings.load().express_monthly_limit
+    used = count_express_this_month()
+    return {
+        'used': used,
+        'limit': limit,
+        'remaining': max(limit - used, 0),
+        'period_start': current_month_start(),
+    }
+
+
+def update_express_limit(limit: int, user: User) -> WeighingSettings:
+    if limit < 0:
+        raise WeighInError('El cupo express no puede ser negativo.')
+    if limit > MAX_EXPRESS_MONTHLY_LIMIT:
+        raise WeighInError(f'El cupo express no puede superar {MAX_EXPRESS_MONTHLY_LIMIT} cargos al mes.')
+
+    settings_row = WeighingSettings.load()
+    settings_row.express_monthly_limit = limit
+    settings_row.updated_by = user
+    settings_row.save(update_fields=['express_monthly_limit', 'updated_by', 'updated_at'])
+    return settings_row
+
+
+def _reserve_express_slot() -> None:
+    """Verifica que quede cupo express, serializando contra otras básculas.
+
+    Bloquea la fila de configuración antes de contar: sin el bloqueo, dos
+    básculas que pesan a la vez el cargo 300 leerían 299 las dos y ambas
+    pasarían. Debe llamarse dentro de la transacción que crea el pesaje, para
+    que el bloqueo dure hasta que el nuevo express ya esté contado.
+    """
+    WeighingSettings.load()
+    settings_row = WeighingSettings.objects.select_for_update().get(pk=1)
+    used = count_express_this_month()
+    if used >= settings_row.express_monthly_limit:
+        raise WeighInError(
+            f'Se agotó el cupo de cargos express del mes '
+            f'({used}/{settings_row.express_monthly_limit}). Pésalo como cargo normal.'
+        )
 
 
 def label_code(reference: str, sequence: int) -> str:
@@ -92,6 +158,7 @@ def create_weigh_in(
     garment_count: int,
     weight_kg: float,
     weighed_by: User,
+    service_type: str = ServiceType.NORMAL,
 ) -> WeighIn:
     """Registra el pesaje y emite sus etiquetas (FLUJO_NEGOCIO.md §4, paso 4).
 
@@ -120,12 +187,19 @@ def create_weigh_in(
         # que un cruce aquí significa que la pantalla mandó algo inconsistente.
         raise WeighInError(f'La empresa {company.name} no pertenece al cliente {client.name}.')
 
+    if service_type not in ServiceType.values:
+        raise WeighInError(f'Tipo de cargo desconocido: {service_type}.')
+    if service_type == ServiceType.EXPRESS:
+        # Va antes de emitir el ref: si no hay cupo, no se quema un correlativo.
+        _reserve_express_slot()
+
     weigh_in = WeighIn.objects.create(
         reference=generate_reference(client),
         client=client,
         company=company,
         garment_count=garment_count,
         weight_kg=weight_kg,
+        service_type=service_type,
         weighed_at=timezone.now(),
         weighed_by=weighed_by,
     )
@@ -209,6 +283,9 @@ def build_print_job(weigh_in_id: int) -> dict:
         'company_name': weigh_in.company.name,
         'faena': weigh_in.client.faena.name if weigh_in.client.faena_id else '',
         'is_contractor': weigh_in.company.is_contractor,
+        # El ticket y los adhesivos imprimen "EXPRESS": es lo que ve la planta
+        # antes de que la guía exista en el sistema.
+        'service_type': weigh_in.service_type,
         'garment_count': weigh_in.garment_count,
         'weight_kg': float(weigh_in.weight_kg),
         'weighed_at': weigh_in.weighed_at,
