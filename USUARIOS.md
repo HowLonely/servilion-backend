@@ -55,17 +55,18 @@ backend. `ADMIN` no aparece en las filas porque las atraviesa todas.
 | Recepción del morral limpio en faena | `POST /api/orders/{id}/clean-reception` | `SUPERVISOR` |
 | Entrega en habitación | `POST /api/orders/{id}/deliver` | `SUPERVISOR` |
 | Reportería / torre de control | `GET /api/reports/...` | `SUPERVISOR` |
-| Recibir carga de lencería | `POST /api/hospitality/` | `DIGITADOR_OT`, `SUPERVISOR` |
-| Contar la salida de la lencería | `POST /api/hospitality/{id}/return-count` | `DIGITADOR_EMPAQUE`, `SUPERVISOR` |
-| Declarar la carga en proceso | `POST /api/hospitality/{id}/process` | `DIGITADOR_EMPAQUE`, `SUPERVISOR` |
-| Despachar el lote y fijar su merma | `POST /api/hospitality/{id}/dispatch` | `SUPERVISOR` |
+| Despachar lencería limpia de la planta a la faena | `POST /api/hospitality/dispatches` | `DIGITADOR_EMPAQUE` |
+| Repartir a un campamento / retirar sucio (app móvil) | `POST /api/hospitality/field-sync` | `SUPERVISOR` |
+| Conteo de inventario de lencería (carga inicial y reajustes) | `POST /api/hospitality/counts` | `ADMIN` |
+| Anular un movimiento de lencería | `POST /api/hospitality/movements/{id}/void` | `ADMIN` |
 | Clientes, empresas, faenas, campamentos, trabajadores, prendas, precios, conflictos | `POST/PUT/DELETE` de esos módulos | `ADMIN` |
 
 El despacho del morral es un paso propio y no el mismo botón que el cierre: un
 morral cerrado sigue en el andén de la planta hasta que alguien lo carga al
 camión (`FLUJO_NEGOCIO.md` §4, paso 7). Por eso lo puede el mismo puesto que
-empaca, mientras que el despacho del **lote de hotelería** queda en el
-supervisor: ahí el despacho es lo que fija la merma definitiva del lote.
+empaca. En hotelería la planta solo despacha: el reparto a los campamentos y
+el retiro del sucio ocurren en faena y los registra el supervisor en la app
+móvil.
 
 La misma matriz está duplicada en los dos clientes, a propósito y documentada
 allí: `servilion-web/src/components/layout/nav-config.ts` y
@@ -95,9 +96,10 @@ docker compose exec api_servilion python manage.py shell < scripts/check_role_ma
 5. `demo_supervisor` — confirma la recepción del morral limpio en faena,
    registra la entrega en habitación y revisa la torre de control.
 
-Para recorrer hotelería, que es el otro servicio: `demo_ot` recibe una carga de
-lencería contra una empresa con `service_type = HOTELERIA`, `demo_empaque` cuenta
-su salida —ahí aparece la merma— y `demo_supervisor` despacha el lote.
+Para recorrer hotelería, que es el otro servicio: `demo_empaque` despacha
+lencería limpia a la faena de una empresa con `service_type = HOTELERIA`,
+`demo_supervisor` la reparte a un campamento y retira el sucio desde la app
+móvil, y `demo_admin` ve los saldos en la web y hace los conteos de inventario.
 
 Para probar el camino de excepción, salta el paso 2 y digitaliza sin ticket: la
 guía genera su propio ref y el empaque vuelve al modo por tipo de prenda.

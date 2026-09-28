@@ -1,156 +1,210 @@
 from datetime import datetime
+from uuid import UUID
 
 from ninja import Schema
+from pydantic import Field
 
 
-class LinenBatchItemIn(Schema):
-    """Una línea de la carga: tipo de lencería y cuánto entró.
+class LinenLineIn(Schema):
+    garment_type_id: int
+    quantity: int
 
-    `garment_type_id` es opcional porque el campamento manda lencería que no
-    siempre está en el catálogo; en ese caso llega `custom_name`.
+
+class DispatchIn(Schema):
+    """Despacho de lencería limpia desde la planta a la faena del cliente."""
+
+    company_id: int
+    lines: list[LinenLineIn]
+    note: str = ''
+
+
+class CountLineIn(Schema):
+    garment_type_id: int
+    # Lo contado físicamente. 0 es un conteo válido: "aquí no hay ninguna".
+    counted: int
+
+
+class CountIn(Schema):
+    """Conteo de inventario: carga inicial o reajuste de un lugar.
+
+    `camp_id` null es la bodega de faena. Los tipos que no vienen en `lines` no
+    se tocan: contar solo las sábanas no pone las toallas en cero.
     """
 
-    garment_type_id: int | None = None
-    custom_name: str = ''
-    quantity_in: int
-    weight_kg: float | None = None
-
-
-class LinenBatchIn(Schema):
     company_id: int
     camp_id: int | None = None
-    received_at: datetime | None = None
-    promised_at: datetime | None = None
-    weight_kg: float | None = None
-    observations: str = ''
-    items: list[LinenBatchItemIn] = []
+    lines: list[CountLineIn]
+    note: str = ''
 
 
-class LinenBatchItemOut(Schema):
-    id: int
-    garment_type_id: int | None
+class FieldMovementIn(Schema):
+    """Reparto o retiro registrado en faena por la app móvil, con o sin señal."""
+
+    client_uuid: UUID
+    kind: str  # "REPARTO" o "RETIRO"
+    company_id: int
+    camp_id: int
+    lines: list[LinenLineIn]
+    # Momento del teléfono, no el de la sincronización.
+    occurred_at: datetime
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    accuracy_meters: float = Field(gt=0)
+    note: str = ''
+
+
+class FieldMovementBatchIn(Schema):
+    movements: list[FieldMovementIn]
+
+
+class FieldMovementResultOut(Schema):
+    """Resultado de un movimiento de la cola del teléfono.
+
+    `DUPLICADO` no es un error: significa que el servidor ya lo tenía (se
+    perdió la respuesta de un envío anterior) y la app debe darlo por enviado.
+    `ERROR` es un rechazo de negocio; reintentar no lo va a arreglar.
+    """
+
+    client_uuid: UUID
+    status: str  # CREADO | DUPLICADO | ERROR
+    movement_id: int | None = None
+    detail: str = ''
+
+
+class FieldMovementBatchOut(Schema):
+    results: list[FieldMovementResultOut]
+
+
+class VoidMovementIn(Schema):
+    reason: str
+
+
+class LinenLineOut(Schema):
+    garment_type_id: int
+    code: str
     name: str
-    quantity_in: int
-    quantity_out: int | None
-    shortage: int | None
-    weight_kg: float | None
+    quantity: int
+    difference: int | None
+
+    @staticmethod
+    def resolve_code(obj) -> str:
+        return obj.garment_type.code
 
     @staticmethod
     def resolve_name(obj) -> str:
-        return obj.display_name
+        return obj.garment_type.name
 
 
-class LinenBatchOut(Schema):
+class LinenMovementOut(Schema):
     id: int
-    batch_number: str
+    client_uuid: UUID
+    kind: str
+    kind_label: str
+    number: str
     company_id: int
     company_name: str
-    company_logo_url: str | None
     camp_id: int | None
     camp_name: str
-    status: str
-    received_at: datetime
-    promised_at: datetime | None
-    dispatched_at: datetime | None
-    weight_kg: float | None
-    observations: str
-    received_by_client: str
-    items: list[LinenBatchItemOut]
-    # Totales del lote, para no recalcularlos en cada pantalla.
-    total_in: int
-    total_out: int | None
-    shortage: int | None
-    is_counted: bool
-    updated_at: datetime
+    # Nombre del lugar que el movimiento toca, para listarlo sin pensar en el
+    # tipo: "Campamento Central", "Bodega de faena" o "Faena" (despacho).
+    location_name: str
+    occurred_at: datetime
+    registered_by_name: str
+    note: str
+    total_quantity: int
+    lines: list[LinenLineOut]
+    is_voided: bool
+    voided_at: datetime | None
+    voided_by_name: str
+    void_reason: str
+
+    @staticmethod
+    def resolve_kind_label(obj) -> str:
+        return obj.get_kind_display()
 
     @staticmethod
     def resolve_company_name(obj) -> str:
         return obj.company.name
 
     @staticmethod
-    def resolve_company_logo_url(obj) -> str | None:
-        from common.services import build_object_url
-
-        return build_object_url(obj.company.logo_key)
-
-    @staticmethod
     def resolve_camp_name(obj) -> str:
         return obj.camp.name if obj.camp_id else ''
 
     @staticmethod
-    def resolve_total_in(obj) -> int:
-        return sum(item.quantity_in for item in obj.items.all())
+    def resolve_location_name(obj) -> str:
+        if obj.camp_id:
+            return obj.camp.name
+        return 'Bodega de faena' if obj.kind == 'CONTEO' else 'Faena'
 
     @staticmethod
-    def resolve_total_out(obj) -> int | None:
-        counted = [item for item in obj.items.all() if item.quantity_out is not None]
-        return sum(item.quantity_out for item in counted) if counted else None
+    def resolve_registered_by_name(obj) -> str:
+        user = obj.registered_by
+        return (user.get_full_name() or user.username) if user else ''
 
     @staticmethod
-    def resolve_shortage(obj) -> int | None:
-        items = list(obj.items.all())
-        counted = [item for item in items if item.quantity_out is not None]
-        if not items or len(counted) != len(items):
-            return None
-        return sum(item.quantity_in - item.quantity_out for item in counted)
+    def resolve_voided_by_name(obj) -> str:
+        user = obj.voided_by
+        return (user.get_full_name() or user.username) if user else ''
 
     @staticmethod
-    def resolve_is_counted(obj) -> bool:
-        items = list(obj.items.all())
-        return bool(items) and all(item.quantity_out is not None for item in items)
+    def resolve_total_quantity(obj) -> int:
+        return sum(line.quantity for line in obj.lines.all())
+
+    @staticmethod
+    def resolve_lines(obj) -> list:
+        return list(obj.lines.all())
 
 
-class ReturnCountIn(Schema):
-    """Cuántas piezas de una línea volvieron del lavado."""
-
-    item_id: int
-    quantity_out: int
-
-
-class ReturnCountBatchIn(Schema):
-    counts: list[ReturnCountIn]
-
-
-class DispatchIn(Schema):
-    received_by_client: str = ''
-    note: str = ''
-
-
-class BatchNoteItemOut(Schema):
-    item_id: int
+class LinenTypeOut(Schema):
+    id: int
+    code: str
     name: str
-    quantity_in: int
-    quantity_out: int | None
-    shortage: int | None
 
 
-class BatchNoteOut(Schema):
-    """Acta de devolución que acompaña la carga limpia de vuelta a faena."""
+class BalanceLineOut(Schema):
+    garment_type_id: int
+    quantity: int
 
-    batch_number: str
+
+class BalanceLocationOut(Schema):
+    """Una fila del saldo: un lugar y cuántas piezas de cada tipo tiene.
+
+    `has_negative` avisa que el sistema cree que hay menos de cero: se retiró
+    más de lo que tenía registrado. No es un error del registro en terreno,
+    sino una señal de que ese lugar necesita un conteo de inventario.
+    """
+
+    kind: str  # SERVILION | BODEGA_FAENA | CAMPAMENTO
+    camp_id: int | None
+    name: str
+    lines: list[BalanceLineOut]
+    total: int
+    has_negative: bool
+    last_counted_at: datetime | None
+
+
+class CompanyBalanceOut(Schema):
+    company_id: int
     company_name: str
-    company_logo_url: str | None
-    camp: str
-    status: str
-    received_at: datetime
-    promised_at: datetime | None
-    dispatched_at: datetime | None
-    weight_kg: float | None
-    received_by_client: str
-    observations: str
-    items: list[BatchNoteItemOut]
-    total_in: int
-    total_out: int | None
-    shortage: int | None
-    is_counted: bool
+    faena_name: str
+    linen_types: list[LinenTypeOut]
+    locations: list[BalanceLocationOut]
 
 
-class HospitalityCountersOut(Schema):
-    batches: int
-    in_plant: int
-    dispatched: int
-    weight_kg: float | None
-    pieces_in: int
-    pieces_out: int
-    shortage: int
-    shortage_rate: float | None
+class DispatchPrintLineOut(Schema):
+    code: str
+    name: str
+    quantity: int
+
+
+class DispatchPrintJobOut(Schema):
+    """Datos de la guía de despacho, sin layout: la terminal arma el ticket."""
+
+    number: str
+    company_name: str
+    faena: str
+    occurred_at: datetime
+    registered_by_name: str
+    note: str
+    total_quantity: int
+    lines: list[DispatchPrintLineOut]

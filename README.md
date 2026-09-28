@@ -32,14 +32,15 @@ La unidad es la **guía**: el morral de una persona, que debe volver completo a 
 * **Boleta impresa** que acompaña la ropa limpia de vuelta a faena, con el código de entrega en QR.
 * **Entrega en habitación** (Flujo 1) mediante doble escaneo —guía y QR de la puerta—, con app móvil **offline-first**: cola local, sincronización en lote y resolución de conflictos *last-write-wins* con registro de los descartes.
 
-### 🛏 Servicio de hotelería — lotes (`hospitality`)
+### 🛏 Servicio de hotelería — stock rotativo (`hospitality`)
 
-La unidad es el **lote**: una carga a granel del campamento que no es de nadie en particular y vuelve al mandante. Es un módulo **separado a propósito**, no una variante de las guías: aquí no hay persona, ni habitación, ni entrega individual, y la prenda no se pistolea una por una.
+La lencería de hotelería (sábanas, toallas…) es un **stock del cliente que rota** entre la planta y sus campamentos: lo que sale limpio hacia un campamento no es lo mismo que llegó sucio de él. Por eso no se controla por carga, sino **dónde está cada pieza**. Es un módulo **separado a propósito** de las guías: aquí no hay persona, ni habitación, ni pistoleo prenda por prenda.
 
-* **Recepción de la carga** por tipo de lencería, con peso y numeración anual propia (`H-2026-0001`).
-* **Cuenta de salida y merma** — el control que el servicio a trabajadores no tiene: se registra cuánto entró y cuánto volvió de cada tipo, y la diferencia se asume pérdida y se informa. Un lote sin contar tiene merma *desconocida*, no cero.
-* **Acta de devolución** imprimible con el conteo, las diferencias y espacio de firma del encargado en faena.
-* **Indicadores del servicio**: lotes en planta, piezas procesadas, peso y tasa de merma acumulada.
+* **Movimientos**: *despacho* de la planta a la faena (con guía impresa y correlativo `HD-2026-0001`), *reparto* de la faena a un campamento y *retiro* del sucio de un campamento. El reparto y el retiro se registran en faena desde la app móvil, sin señal si hace falta, con GPS e idempotencia.
+* **Saldos calculados**, nunca guardados: por **campamento**, **por repartir en faena** (despachado − repartido) y **en poder de Servilion** (retirado − despachado). Un retiro mayor que el saldo se registra igual y el campamento queda marcado en negativo.
+* **Conteo de inventario**: el administrador fija lo contado en un campamento o en la bodega de faena. Sirve de carga inicial y de reajuste; los movimientos anteriores al conteo ya quedan dentro de lo contado.
+* **Anulación** con motivo, solo administrador: el movimiento queda en el historial y sale de los saldos.
+* Los tipos de lencería salen del catálogo de prendas marcados como *de hotelería*.
 
 > El sistema Access heredado no sabía representar esto y lo forzó dentro de las guías, creando trabajadores falsos llamados `200 JUEGOS DE SABANAS` —con RUT `0` y una habitación inventada—. Este módulo existe para no repetir ese apaño.
 
@@ -91,7 +92,7 @@ Documentación interactiva en `http://localhost:8000/api/docs`.
 ├── garments/           # Catálogo de tipos de prenda
 │
 ├── orders/             # Servicio a trabajadores: guías, empaque, entrega y reportes
-├── hospitality/        # Servicio de hotelería: lotes de lencería y merma
+├── hospitality/        # Servicio de hotelería: stock rotativo de lencería por campamento
 │
 ├── nginx/              # Configuración del Proxy Inverso
 ├── .env / .env.prod    # Variables de entorno (desarrollo / producción)
@@ -172,7 +173,7 @@ Para mantener la coherencia del sistema, **no programar lógica dentro de las vi
 
 El siguiente comando elimina y reemplaza todos los datos de negocio: OT,
 clientes, empresas, trabajadores, faenas, campamentos, habitaciones, prendas,
-precios, pesajes, conflictos y lotes de hotelería. Las cuentas de acceso de
+precios, pesajes, conflictos y movimientos de lencería de hotelería. Las cuentas de acceso de
 `authentication.User` se conservan sin modificar ID, contraseña ni rol.
 
 ```bash

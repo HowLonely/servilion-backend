@@ -4,10 +4,12 @@ from garments.models import GarmentType
 from garments.schemas import GarmentTypeIn
 
 
-def list_garment_types(is_active: bool | None = None) -> QuerySet[GarmentType]:
+def list_garment_types(is_active: bool | None = None, is_linen: bool | None = None) -> QuerySet[GarmentType]:
     queryset = GarmentType.objects.all()
     if is_active is not None:
         queryset = queryset.filter(is_active=is_active)
+    if is_linen is not None:
+        queryset = queryset.filter(is_linen=is_linen)
     # Por código, no por nombre: es la referencia que usa el staff a diario
     # (etiquetas, pistoleo, digitalización), así que el catálogo y el selector
     # de prendas quedan navegables por código. También da un orden

@@ -8,7 +8,8 @@ from authentication.models import User
 from camps.models import Camp, Faena, Room
 from companies.models import Client, ClientGarmentPrice, Company
 from garments.models import GarmentType
-from hospitality.models import BatchStatus, LinenBatch
+from hospitality.models import LinenMovement
+from hospitality.services import compute_balances
 from orders.models import LaundryOrder, OrderStatus, ReferenceCounter, SiteScan, SyncConflict
 from weighing.models import WeighIn
 from workers.models import Worker
@@ -51,15 +52,22 @@ class SeedDemoCommandTests(TestCase):
         self.assertEqual(ClientGarmentPrice.objects.count(), 12)
         self.assertEqual(LaundryOrder.objects.count(), 10)
         self.assertEqual(WeighIn.objects.count(), 2)
-        self.assertEqual(LinenBatch.objects.count(), 3)
+        self.assertEqual(LinenMovement.objects.count(), 9)
 
         for status in OrderStatus.values:
             self.assertTrue(
                 LaundryOrder.objects.filter(status=status).exists(),
                 f'El estado {status} no está representado en la demo.',
             )
-        for status in BatchStatus.values:
-            self.assertTrue(LinenBatch.objects.filter(status=status).exists())
+        for kind in LinenMovement.Kind.values:
+            self.assertTrue(
+                LinenMovement.objects.filter(kind=kind).exists(),
+                f'El movimiento {kind} no está representado en la demo.',
+            )
+        hotel = Company.objects.get(name='Hotel Cordillera')
+        balances = {row['name']: row for row in compute_balances(hotel)['locations']}
+        self.assertTrue(balances['Campamento Norte']['has_negative'])
+        self.assertFalse(balances['Campamento Central']['has_negative'])
 
         self.assertEqual(SiteScan.objects.filter(kind=SiteScan.Kind.DELIVERY).count(), 2)
         self.assertEqual(

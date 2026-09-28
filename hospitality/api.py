@@ -6,16 +6,18 @@ from ninja.pagination import paginate
 
 from authentication.auth import JWTAuth
 from authentication.models import User
-from authentication.permissions import require_roles
+from authentication.permissions import require_admin, require_roles
 from common.schemas import MessageOut
 from hospitality import services
 from hospitality.schemas import (
-    BatchNoteOut,
+    CompanyBalanceOut,
+    CountIn,
     DispatchIn,
-    HospitalityCountersOut,
-    LinenBatchIn,
-    LinenBatchOut,
-    ReturnCountBatchIn,
+    DispatchPrintJobOut,
+    FieldMovementBatchIn,
+    FieldMovementBatchOut,
+    LinenMovementOut,
+    VoidMovementIn,
 )
 
 router = Router(auth=JWTAuth())
@@ -24,79 +26,95 @@ router = Router(auth=JWTAuth())
 # parámetro, porque Django Ninja resuelve por forma de URL antes que por método.
 
 
-@router.get('/', response=List[LinenBatchOut])
+@router.get('/balances', response=List[CompanyBalanceOut])
+def get_balances(request, company_id: int | None = None):
+    """Dónde está la lencería de cada cliente: Servilion, bodega de faena y campamentos.
+
+    Sin `company_id` trae todos los clientes de hotelería: es lo que baja la app
+    móvil para ver el saldo del campamento sin señal.
+    """
+    return services.compute_all_balances(company_id=company_id)
+
+
+@router.get('/movements', response=List[LinenMovementOut])
 @paginate
-def list_batches(
+def list_movements(
     request,
-    status: str | None = None,
     company_id: int | None = None,
-    search: str | None = None,
+    camp_id: int | None = None,
+    kind: str | None = None,
+    include_voided: bool = True,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
 ):
-    return services.list_batches(
-        status=status,
+    return services.list_movements(
         company_id=company_id,
-        search=search,
+        camp_id=camp_id,
+        kind=kind,
+        include_voided=include_voided,
         date_from=date_from,
         date_to=date_to,
     )
 
 
-@router.post('/', response={201: LinenBatchOut, 400: MessageOut})
-@require_roles(User.Role.DIGITADOR_OT, User.Role.SUPERVISOR)
-def create_batch(request, payload: LinenBatchIn):
-    """Registra la llegada de una carga de lencería sucia del campamento."""
+@router.post('/dispatches', response={201: LinenMovementOut, 400: MessageOut})
+@require_roles(User.Role.DIGITADOR_EMPAQUE)
+def register_dispatch(request, payload: DispatchIn):
+    """Despacho de lencería limpia desde la planta a la faena del cliente."""
     try:
-        batch = services.create_batch(payload, received_by=request.auth)
-    except services.BatchFlowError as exc:
-        return 400, {'detail': str(exc)}
-    return 201, services.get_batch(batch.id)
-
-
-@router.get('/counters', response=HospitalityCountersOut)
-def get_counters(request, date_from: datetime | None = None, date_to: datetime | None = None):
-    """Indicadores del servicio: lotes en planta, piezas y merma acumulada."""
-    return services.get_hospitality_counters(date_from=date_from, date_to=date_to)
-
-
-@router.get('/{batch_id}', response=LinenBatchOut)
-def get_batch(request, batch_id: int):
-    return services.get_batch(batch_id)
-
-
-@router.get('/{batch_id}/note', response=BatchNoteOut)
-def get_batch_note(request, batch_id: int):
-    """Acta de devolución que el encargado del campamento revisa y firma."""
-    return services.build_batch_note(batch_id)
-
-
-@router.post('/{batch_id}/process', response={200: LinenBatchOut, 400: MessageOut})
-@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
-def start_processing(request, batch_id: int):
-    try:
-        return 200, services.start_processing(batch_id, user=request.auth)
-    except services.BatchFlowError as exc:
-        return 400, {'detail': str(exc)}
-
-
-@router.post('/{batch_id}/return-count', response={200: LinenBatchOut, 400: MessageOut})
-@require_roles(User.Role.DIGITADOR_EMPAQUE, User.Role.SUPERVISOR)
-def register_return_count(request, batch_id: int, payload: ReturnCountBatchIn):
-    """Cuenta de salida por tipo de lencería: es donde aparece la merma."""
-    try:
-        return 200, services.register_return_count(batch_id, payload.counts, user=request.auth)
-    except services.BatchFlowError as exc:
-        return 400, {'detail': str(exc)}
-
-
-@router.post('/{batch_id}/dispatch', response={200: LinenBatchOut, 400: MessageOut})
-@require_roles(User.Role.SUPERVISOR)
-def dispatch_batch(request, batch_id: int, payload: DispatchIn):
-    """Despacha la carga limpia de vuelta a faena y cierra el lote."""
-    try:
-        return 200, services.dispatch_batch(
-            batch_id, user=request.auth, received_by_client=payload.received_by_client, note=payload.note
+        movement = services.register_dispatch(
+            payload.company_id, payload.lines, user=request.auth, note=payload.note
         )
-    except services.BatchFlowError as exc:
-        return 400, {'detail': str(exc)}
+    except services.LinenFlowError as error:
+        return 400, {'detail': str(error)}
+    return 201, movement
+
+
+@router.post('/counts', response={201: LinenMovementOut, 400: MessageOut})
+@require_admin()
+def register_count(request, payload: CountIn):
+    """Conteo de inventario de un campamento o de la bodega de faena."""
+    try:
+        movement = services.register_count(
+            payload.company_id, payload.camp_id, payload.lines, user=request.auth, note=payload.note
+        )
+    except services.LinenFlowError as error:
+        return 400, {'detail': str(error)}
+    return 201, movement
+
+
+@router.post('/field-sync', response=FieldMovementBatchOut)
+@require_roles(User.Role.SUPERVISOR)
+def sync_field_movements(request, payload: FieldMovementBatchIn):
+    """Cola de repartos y retiros que la app móvil registró en faena.
+
+    Cada movimiento se resuelve por separado: uno rechazado no bloquea al resto
+    de la cola, y reenviar uno ya recibido responde DUPLICADO sin repetirlo.
+    """
+    return {
+        'results': [services.sync_field_movement(movement, user=request.auth) for movement in payload.movements]
+    }
+
+
+@router.get('/movements/{movement_id}', response=LinenMovementOut)
+def get_movement(request, movement_id: int):
+    return services.get_movement(movement_id)
+
+
+@router.get('/movements/{movement_id}/print', response={200: DispatchPrintJobOut, 400: MessageOut})
+def get_dispatch_print_job(request, movement_id: int):
+    """Datos de la guía de despacho para la etiquetera de la planta."""
+    try:
+        return 200, services.build_dispatch_print_job(movement_id)
+    except services.LinenFlowError as error:
+        return 400, {'detail': str(error)}
+
+
+@router.post('/movements/{movement_id}/void', response={200: LinenMovementOut, 400: MessageOut})
+@require_admin()
+def void_movement(request, movement_id: int, payload: VoidMovementIn):
+    """Anula un movimiento mal registrado; su efecto sale de los saldos."""
+    try:
+        return 200, services.void_movement(movement_id, user=request.auth, reason=payload.reason)
+    except services.LinenFlowError as error:
+        return 400, {'detail': str(error)}
