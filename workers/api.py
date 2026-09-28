@@ -4,7 +4,7 @@ from ninja import Router
 from ninja.pagination import paginate
 
 from authentication.auth import JWTAuth
-from authentication.permissions import require_admin
+from authentication.permissions import Perm, require_permission
 from workers import services
 from workers.schemas import WorkerIn, WorkerOut
 
@@ -30,19 +30,19 @@ def get_worker(request, worker_id: int):
 
 
 @router.post('/', response={201: WorkerOut})
-@require_admin()
+@require_permission(Perm.WORKERS)
 def create_worker(request, payload: WorkerIn):
     return 201, services.create_worker(payload)
 
 
 @router.put('/{worker_id}', response=WorkerOut)
-@require_admin()
+@require_permission(Perm.WORKERS)
 def update_worker(request, worker_id: int, payload: WorkerIn):
     return services.update_worker(worker_id, payload)
 
 
 @router.delete('/{worker_id}', response={204: None})
-@require_admin()
+@require_permission(Perm.WORKERS)
 def deactivate_worker(request, worker_id: int):
     services.deactivate_worker(worker_id)
     return 204, None

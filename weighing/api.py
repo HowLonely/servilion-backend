@@ -4,8 +4,8 @@ from typing import List
 from ninja import Router
 
 from authentication.auth import JWTAuth
-from authentication.models import User
-from authentication.permissions import require_admin, require_roles
+from authentication.permissions import Perm, require_permission
+from common.node import plant_only
 from common.schemas import MessageOut
 from weighing import services
 from weighing.models import WeighingSettings
@@ -27,7 +27,8 @@ router = Router(auth=JWTAuth())
 
 
 @router.post('/', response={201: WeighInOut, 400: MessageOut})
-@require_roles(User.Role.PESAJE, User.Role.SUPERVISOR)
+@require_permission(Perm.WEIGHING)
+@plant_only
 def create_weigh_in(request, payload: WeighInIn):
     """Pesa el morral, emite el ref y crea sus etiquetas."""
     try:
@@ -56,7 +57,7 @@ def get_settings(request):
 
 
 @router.put('/settings', response={200: WeighingSettingsOut, 400: MessageOut})
-@require_admin()
+@require_permission(Perm.SETTINGS)
 def update_settings(request, payload: WeighingSettingsIn):
     """Cambia el cupo express mensual. Rige de inmediato para el mes en curso."""
     try:
@@ -107,7 +108,8 @@ def get_print_job(request, weigh_in_id: int):
 
 
 @router.post('/{weigh_in_id}/void', response={200: WeighInOut, 400: MessageOut})
-@require_roles(User.Role.PESAJE, User.Role.SUPERVISOR)
+@require_permission(Perm.WEIGHING)
+@plant_only
 def void_weigh_in(request, weigh_in_id: int, payload: VoidWeighInIn):
     try:
         return 200, services.void_weigh_in(weigh_in_id, request.auth, payload.reason)

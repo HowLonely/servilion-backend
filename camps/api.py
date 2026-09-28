@@ -4,7 +4,7 @@ from ninja import Router
 from ninja.pagination import paginate
 
 from authentication.auth import JWTAuth
-from authentication.permissions import require_admin
+from authentication.permissions import Perm, require_permission
 from camps import services
 from camps.schemas import CampIn, CampOut, FaenaIn, FaenaOut, RoomIn, RoomOut
 
@@ -28,14 +28,14 @@ def get_faena(request, faena_id: int):
 
 
 @faenas_router.post('/', response={201: FaenaOut})
-@require_admin()
+@require_permission(Perm.CATALOG)
 def create_faena(request, payload: FaenaIn):
     """Crear una faena es excepcional: solo al empezar a atender un sitio nuevo."""
     return 201, services.create_faena(payload)
 
 
 @faenas_router.put('/{faena_id}', response=FaenaOut)
-@require_admin()
+@require_permission(Perm.CATALOG)
 def update_faena(request, faena_id: int, payload: FaenaIn):
     return services.update_faena(faena_id, payload)
 
@@ -60,19 +60,19 @@ def get_camp(request, camp_id: int):
 
 
 @camps_router.post('/', response={201: CampOut})
-@require_admin()
+@require_permission(Perm.CATALOG)
 def create_camp(request, payload: CampIn):
     return 201, services.create_camp(payload)
 
 
 @camps_router.put('/{camp_id}', response=CampOut)
-@require_admin()
+@require_permission(Perm.CATALOG)
 def update_camp(request, camp_id: int, payload: CampIn):
     return services.update_camp(camp_id, payload)
 
 
 @camps_router.delete('/{camp_id}', response={204: None})
-@require_admin()
+@require_permission(Perm.CATALOG)
 def deactivate_camp(request, camp_id: int):
     services.deactivate_camp(camp_id)
     return 204, None
@@ -101,20 +101,20 @@ def get_room(request, room_id: int):
 
 
 @rooms_router.post('/', response={201: RoomOut})
-@require_admin()
+@require_permission(Perm.CATALOG)
 def create_room(request, payload: RoomIn):
     """El `qr_code` lo genera el servidor; se imprime y se pega en la puerta."""
     return 201, services.create_room(payload)
 
 
 @rooms_router.put('/{room_id}', response=RoomOut)
-@require_admin()
+@require_permission(Perm.CATALOG)
 def update_room(request, room_id: int, payload: RoomIn):
     return services.update_room(room_id, payload)
 
 
 @rooms_router.delete('/{room_id}', response={204: None})
-@require_admin()
+@require_permission(Perm.CATALOG)
 def deactivate_room(request, room_id: int):
     services.deactivate_room(room_id)
     return 204, None

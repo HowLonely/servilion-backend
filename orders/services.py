@@ -8,7 +8,7 @@ from django.db.models import Count, Q, QuerySet
 from django.utils import timezone
 
 from authentication.models import User
-from authentication.permissions import PermissionDenied, user_has_role
+from authentication.permissions import Perm, PermissionDenied, user_has_permission
 from common.services import build_object_url, build_presigned_upload
 from companies.models import Client, Company
 from companies.services import get_client_price_map
@@ -50,12 +50,12 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     OrderStatus.DELIVERED: set(),
 }
 
-# Quién puede llevar la guía a cada estado manual. Refleja la separación de
-# funciones de la operación real: quien digitaliza no factura, y el supervisor
-# no toca el dinero. ADMIN atraviesa todo (ver `user_has_role`). Los estados no
-# listados los puede mover cualquier staff autenticado.
-STATUS_REQUIRED_ROLES: dict[str, tuple[str, ...]] = {
-    OrderStatus.DELIVERED: (User.Role.SUPERVISOR,),
+# Qué permiso hace falta para llevar la guía a cada estado manual. Refleja la
+# separación de funciones de la operación real: la entrega la registra quien
+# trabaja en faena. ADMIN atraviesa todo (ver `role_permissions`). Los estados
+# no listados los puede mover cualquier staff autenticado.
+STATUS_REQUIRED_PERMISSIONS: dict[str, tuple[str, ...]] = {
+    OrderStatus.DELIVERED: (Perm.FIELD_ORDERS,),
 }
 
 # Campo de timestamp que se completa automáticamente al entrar a cada estado.
@@ -312,11 +312,11 @@ def create_order(payload: LaundryOrderIn, received_by: User) -> LaundryOrder:
         # líneas para que un fallo en el detalle no deje el pesaje consumido:
         # todo esto corre dentro de la misma transacción.
         weighing_services.consume(weigh_in.id, order)
-    _attach_pending_site_scans(order)
+    attach_pending_site_scans(order)
     return order
 
 
-def _attach_pending_site_scans(order: LaundryOrder) -> None:
+def attach_pending_site_scans(order: LaundryOrder) -> None:
     """Enlaza a la guía recién digitalizada los pistoleos que faena hizo antes.
 
     En faena se pistoléa el morral sucio (paso 2) cuando la guía todavía no
@@ -476,10 +476,10 @@ def update_status(order_id: int, new_status: str, user: User, note: str = '') ->
     if new_status not in allowed_transitions(order):
         raise InvalidStatusTransition(f'No se puede pasar de {order.status} a {new_status}.')
 
-    required_roles = STATUS_REQUIRED_ROLES.get(new_status)
-    if required_roles and not user_has_role(user, *required_roles):
+    required_permissions = STATUS_REQUIRED_PERMISSIONS.get(new_status)
+    if required_permissions and not user_has_permission(user, *required_permissions):
         raise PermissionDenied(
-            f'Tu rol ({user.get_role_display()}) no puede marcar una guía como '
+            f'Tu rol ({user.role_name}) no puede marcar una guía como '
             f'{OrderStatus(new_status).label}.'
         )
 
@@ -1404,7 +1404,7 @@ def sync_order(data: OrderSyncIn) -> tuple[LaundryOrder, str]:
         )
         order.garment_count = _build_items(order, data.items)
         order.save(update_fields=['garment_count'])
-        _attach_pending_site_scans(order)
+        attach_pending_site_scans(order)
         return order, 'created'
 
     if data.updated_at <= order.updated_at:

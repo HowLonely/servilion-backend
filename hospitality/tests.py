@@ -1,7 +1,7 @@
 from datetime import timedelta
 from uuid import uuid4
 
-from django.test import Client as HttpClient, TestCase
+from django.test import Client as HttpClient, TestCase, override_settings
 from django.utils import timezone
 
 from authentication.models import User
@@ -148,6 +148,17 @@ class LinenStockTests(TestCase):
         with self.assertRaises(services.LinenFlowError):
             services.void_movement(result['movement_id'], self.admin, 'Otra vez.')
 
+    @override_settings(ALLOW_PLANT_OPERATIONS=False)
+    def test_cloud_refuses_plant_dispatch(self):
+        # El despacho sale de la planta (servidor local); la nube no emite `HD-`.
+        body = {'company_id': self.company.id, 'lines': [{'garment_type_id': self.sheet.id, 'quantity': 3}]}
+        token = issue_tokens(self.packer)['access']
+        response = HttpClient().post('/api/hospitality/dispatches', body, content_type='application/json',
+                                     HTTP_AUTHORIZATION=f'Bearer {token}')
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(LinenMovement.objects.exists())
+
+    @override_settings(ALLOW_PLANT_OPERATIONS=True)
     def test_roles_on_the_api(self):
         http = HttpClient()
 

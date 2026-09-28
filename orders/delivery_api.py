@@ -2,7 +2,7 @@ from ninja import Router
 
 from authentication.auth import JWTAuth
 from authentication.models import User
-from authentication.permissions import require_roles
+from authentication.permissions import Perm, require_permission
 from common.schemas import MessageOut
 from camps.models import Room
 from orders import services
@@ -21,7 +21,7 @@ router = Router(auth=JWTAuth())
         409: DeliveryMismatchOut,
     },
 )
-@require_roles(User.Role.SUPERVISOR)
+@require_permission(Perm.FIELD_ORDERS)
 def confirm_delivery(request, payload: DeliveryConfirmIn):
     """Sincroniza una entrega móvil con ubicación obligatoria.
 
