@@ -15,6 +15,32 @@ class WeighInIn(Schema):
     company_id: int
     garment_count: int
     weight_kg: float
+    # Opcional para que las básculas con una versión anterior sigan pesando
+    # cargos normales sin cambios.
+    service_type: str = 'NORMAL'
+
+
+class ExpressQuotaOut(Schema):
+    """Cupo express del mes en curso: `used`/`limit` es lo que dice el botón."""
+
+    used: int
+    limit: int
+    remaining: int
+    period_start: datetime
+
+
+class WeighingSettingsOut(Schema):
+    express_monthly_limit: int
+    updated_at: datetime
+    updated_by_name: str
+
+    @staticmethod
+    def resolve_updated_by_name(obj) -> str:
+        return obj.updated_by.get_full_name() or obj.updated_by.username if obj.updated_by_id else ''
+
+
+class WeighingSettingsIn(Schema):
+    express_monthly_limit: int
 
 
 class WeighLabelOut(Schema):
@@ -39,6 +65,7 @@ class WeighInOut(Schema):
     # cuando corresponde, igual que la etiqueta lavable actual.
     faena: str
     is_contractor: bool
+    service_type: str
 
     garment_count: int
     weight_kg: float
@@ -108,6 +135,7 @@ class PrintJobOut(Schema):
     company_name: str
     faena: str
     is_contractor: bool
+    service_type: str
     garment_count: int
     weight_kg: float
     weighed_at: datetime

@@ -2,6 +2,11 @@ from django.conf import settings
 from django.db import models
 
 from common.models import TimeStampedModel
+from orders.models import ServiceType
+
+# Cupo con que nace la configuración. Solo es el valor inicial de la fila: el
+# límite vigente se lee siempre de `WeighingSettings` y se cambia desde la web.
+DEFAULT_EXPRESS_MONTHLY_LIMIT = 300
 
 
 class WeighIn(TimeStampedModel):
@@ -55,6 +60,11 @@ class WeighIn(TimeStampedModel):
     weight_kg = models.DecimalField('Peso del morral (kg)', max_digits=6, decimal_places=2)
 
     status = models.CharField(max_length=15, choices=Status.choices, default=Status.PENDING, db_index=True)
+    # Lo elige el operador al cerrar el pesaje. Los EXPRESS consumen el cupo
+    # mensual de `WeighingSettings` mientras no estén anulados.
+    service_type = models.CharField(
+        'Tipo de cargo', max_length=10, choices=ServiceType.choices, default=ServiceType.NORMAL
+    )
 
     weighed_at = models.DateTimeField('Momento del pesaje', db_index=True)
     weighed_by = models.ForeignKey(
@@ -88,6 +98,9 @@ class WeighIn(TimeStampedModel):
             # "los pendientes": las dos consultas filtran por estado y ordenan
             # por fecha.
             models.Index(fields=['status', 'weighed_at'], name='weigh_status_at_idx'),
+            # El contador del cupo express cuenta por tipo dentro del mes, y se
+            # consulta en cada pesaje express y cada 30 s desde cada báscula.
+            models.Index(fields=['service_type', 'weighed_at'], name='weigh_service_at_idx'),
         ]
 
     def __str__(self) -> str:
@@ -97,6 +110,36 @@ class WeighIn(TimeStampedModel):
     def is_open(self) -> bool:
         """Se puede anular o reimprimir mientras nadie lo haya digitalizado."""
         return self.status == self.Status.PENDING
+
+
+class WeighingSettings(models.Model):
+    """Configuración de la báscula editable desde el panel web. Fila única (pk=1).
+
+    Es un singleton en base de datos y no una variable de entorno porque la
+    cambia un administrador desde la web, sin redeploy. Además la fila hace de
+    candado: `create_weigh_in` la bloquea antes de contar el cupo express, así
+    dos básculas no pueden llevarse a la vez el último cargo del mes.
+    """
+
+    express_monthly_limit = models.PositiveIntegerField(
+        'Cupo mensual de cargos express', default=DEFAULT_EXPRESS_MONTHLY_LIMIT
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+'
+    )
+
+    class Meta:
+        verbose_name = 'Configuración de pesaje'
+        verbose_name_plural = 'Configuración de pesaje'
+
+    def __str__(self) -> str:
+        return f'Cupo express: {self.express_monthly_limit}/mes'
+
+    @classmethod
+    def load(cls) -> 'WeighingSettings':
+        settings_row, _ = cls.objects.get_or_create(pk=1)
+        return settings_row
 
 
 class WeighLabel(models.Model):

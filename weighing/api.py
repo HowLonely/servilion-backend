@@ -5,10 +5,19 @@ from ninja import Router
 
 from authentication.auth import JWTAuth
 from authentication.models import User
-from authentication.permissions import require_roles
+from authentication.permissions import require_admin, require_roles
 from common.schemas import MessageOut
 from weighing import services
-from weighing.schemas import PrintJobOut, VoidWeighInIn, WeighInIn, WeighInOut
+from weighing.models import WeighingSettings
+from weighing.schemas import (
+    ExpressQuotaOut,
+    PrintJobOut,
+    VoidWeighInIn,
+    WeighingSettingsIn,
+    WeighingSettingsOut,
+    WeighInIn,
+    WeighInOut,
+)
 
 router = Router(auth=JWTAuth())
 
@@ -28,10 +37,32 @@ def create_weigh_in(request, payload: WeighInIn):
             garment_count=payload.garment_count,
             weight_kg=payload.weight_kg,
             weighed_by=request.auth,
+            service_type=payload.service_type,
         )
     except services.WeighInError as error:
         return 400, {'detail': str(error)}
     return 201, weigh_in
+
+
+@router.get('/express-quota', response=ExpressQuotaOut)
+def get_express_quota(request):
+    """Cargos express usados en el mes y el límite vigente (botón de la báscula)."""
+    return services.express_quota()
+
+
+@router.get('/settings', response=WeighingSettingsOut)
+def get_settings(request):
+    return WeighingSettings.load()
+
+
+@router.put('/settings', response={200: WeighingSettingsOut, 400: MessageOut})
+@require_admin()
+def update_settings(request, payload: WeighingSettingsIn):
+    """Cambia el cupo express mensual. Rige de inmediato para el mes en curso."""
+    try:
+        return 200, services.update_express_limit(payload.express_monthly_limit, request.auth)
+    except services.WeighInError as error:
+        return 400, {'detail': str(error)}
 
 
 @router.get('/', response=List[WeighInOut])
