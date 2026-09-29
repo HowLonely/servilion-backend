@@ -22,7 +22,7 @@ DISPATCH_PREFIX = 'HD'
 # es un cortafuegos contra un cero de más tecleado en una pantalla táctil.
 MAX_LINE_QUANTITY = 20_000
 
-# Cómo mueve cada flujo la lencería entre lugares: (lugar, signo). El lugar
+# Cómo mueve cada flujo la hotelería entre lugares: (lugar, signo). El lugar
 # CAMPAMENTO se resuelve con el `camp_id` del movimiento.
 FLOW_EFFECTS: dict[str, tuple[tuple[str, int], ...]] = {
     Kind.DISPATCH: ((LinenLocation.SERVILION, -1), (LinenLocation.FAENA, +1)),
@@ -83,7 +83,7 @@ def hospitality_companies() -> QuerySet[Company]:
 
 
 def camps_of(company: Company) -> QuerySet[Camp]:
-    """Campamentos a los que puede ir la lencería del cliente: los de su faena."""
+    """Campamentos a los que puede ir la hotelería del cliente: los de su faena."""
     if not company.client.faena_id:
         return Camp.objects.none()
     return Camp.objects.filter(faena_id=company.client.faena_id, is_active=True).order_by('name')
@@ -153,7 +153,7 @@ def _balances_by_key(company_id: int) -> tuple[dict, dict]:
 
 
 def compute_balances(company: Company) -> dict:
-    """Dónde está la lencería del cliente: Servilion, bodega de faena y campamentos."""
+    """Dónde está la hotelería del cliente: Servilion, bodega de faena y campamentos."""
     balances, last_counted_at = _balances_by_key(company.id)
 
     used_type_ids = {garment_type_id for (_, garment_type_id) in balances}
@@ -163,7 +163,7 @@ def compute_balances(company: Company) -> dict:
     linen_types.sort(key=lambda garment_type: garment_type.code)
 
     camps = list(camps_of(company))
-    # Un campamento desactivado que todavía tiene lencería sigue apareciendo:
+    # Un campamento desactivado que todavía tiene hotelería sigue apareciendo:
     # esconderlo haría desaparecer piezas del saldo sin que nadie las cuente.
     known = {camp.id for camp in camps}
     orphan_ids = {
@@ -240,22 +240,22 @@ def _camp_of(company: Company, camp_id: int) -> Camp:
 
 def _linen_types(garment_type_ids: list[int]) -> dict[int, GarmentType]:
     if len(set(garment_type_ids)) != len(garment_type_ids):
-        raise LinenFlowError('Un mismo tipo de lencería viene dos veces en el movimiento.')
+        raise LinenFlowError('Un mismo tipo de hotelería viene dos veces en el movimiento.')
     found = {gt.id: gt for gt in GarmentType.objects.filter(id__in=garment_type_ids)}
     missing = set(garment_type_ids) - set(found)
     if missing:
-        raise LinenFlowError('Hay tipos de lencería que no existen en el catálogo.')
+        raise LinenFlowError('Hay tipos de hotelería que no existen en el catálogo.')
     not_linen = [gt.name for gt in found.values() if not gt.is_linen]
     if not_linen:
         raise LinenFlowError(
-            'No están marcados como lencería de hotelería: ' + ', '.join(sorted(not_linen)) + '.'
+            'No están marcados como hotelería: ' + ', '.join(sorted(not_linen)) + '.'
         )
     return found
 
 
 def _validate_flow_lines(lines: list[LinenLineIn]) -> dict[int, GarmentType]:
     if not lines:
-        raise LinenFlowError('El movimiento debe traer al menos un tipo de lencería.')
+        raise LinenFlowError('El movimiento debe traer al menos un tipo de hotelería.')
     for line in lines:
         if line.quantity < 1:
             raise LinenFlowError('Cada línea debe mover al menos una pieza.')
@@ -280,7 +280,7 @@ def _next_dispatch_number(moment: datetime) -> str:
 
 @transaction.atomic
 def register_dispatch(company_id: int, lines: list[LinenLineIn], user: User, note: str = '') -> LinenMovement:
-    """Despacho de lencería limpia desde la planta hacia la faena del cliente."""
+    """Despacho de hotelería limpia desde la planta hacia la faena del cliente."""
     company = _hospitality_company(company_id, lock=True)
     _validate_flow_lines(lines)
     occurred_at = timezone.now()
@@ -316,7 +316,7 @@ def register_count(
     company = _hospitality_company(company_id, lock=True)
     camp = _camp_of(company, camp_id) if camp_id else None
     if not lines:
-        raise LinenFlowError('El conteo debe traer al menos un tipo de lencería.')
+        raise LinenFlowError('El conteo debe traer al menos un tipo de hotelería.')
     for line in lines:
         if line.counted < 0:
             raise LinenFlowError('Lo contado no puede ser negativo.')

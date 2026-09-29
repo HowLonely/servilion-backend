@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 
 def mark_linen_types_from_batches(apps, schema_editor):
-    # Los lotes se borran en esta misma migración, pero los tipos de lencería
+    # Los lotes se borran en esta misma migración, pero los tipos de hotelería
     # que usaban son justo los que circulan en hotelería. Marcarlos evita que,
     # tras el deploy, el despacho y el conteo arranquen sin tipos que ofrecer.
     LinenBatchItem = apps.get_model('hospitality', 'LinenBatchItem')
@@ -68,8 +68,8 @@ class Migration(migrations.Migration):
                 ('voided_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL)),
             ],
             options={
-                'verbose_name': 'Movimiento de lencería',
-                'verbose_name_plural': 'Movimientos de lencería',
+                'verbose_name': 'Movimiento de hotelería',
+                'verbose_name_plural': 'Movimientos de hotelería',
                 'ordering': ['-occurred_at', '-id'],
             },
         ),

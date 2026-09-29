@@ -23,7 +23,7 @@ SYSTEM_ROLES = {
     'DIGITADOR_OT': ('Digitador de OT', 'Digitalización de la OT física.', ['orders.digitize', 'history.view']),
     'DIGITADOR_EMPAQUE': (
         'Digitador de Empaque',
-        'Empaque, despacho de morrales y despacho de lencería.',
+        'Empaque, despacho de morrales y despacho de hotelería.',
         ['orders.pack', 'orders.dispatch', 'hospitality.dispatch', 'hospitality.view'],
     ),
 }

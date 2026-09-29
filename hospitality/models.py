@@ -9,7 +9,7 @@ from garments.models import GarmentType
 
 
 class LinenLocation(models.TextChoices):
-    """Dónde puede estar la lencería de un cliente de hotelería.
+    """Dónde puede estar la hotelería de un cliente de hotelería.
 
     No es una tabla: los campamentos ya existen (`camps.Camp`) y las otras dos
     ubicaciones son una por cliente. Sirve para nombrar las filas del saldo.
@@ -21,10 +21,10 @@ class LinenLocation(models.TextChoices):
 
 
 class LinenMovement(TimeStampedModel):
-    """Un movimiento de lencería de hotelería: el stock rotativo del cliente.
+    """Un movimiento de hotelería: el stock rotativo del cliente.
 
     Reemplaza al lote (`LinenBatch`), que modelaba una carga que iba y volvía
-    entera. La operación real no es así: la lencería es un stock del cliente que
+    entera. La operación real no es así: la hotelería es un stock del cliente que
     rota entre la planta y sus campamentos, y lo que sale limpio hacia un
     campamento no es lo mismo que llegó sucio de él. Por eso ya no se controla
     "cuánto volvió de esta carga", sino dónde está cada pieza:
@@ -37,7 +37,7 @@ class LinenMovement(TimeStampedModel):
     (ver `services.compute_balances`). Un movimiento no se edita ni se borra;
     si estuvo mal, se anula y queda en el historial.
 
-    El CONTEO es distinto a los demás: no mueve lencería, fija cuánto hay en un
+    El CONTEO es distinto a los demás: no mueve hotelería, fija cuánto hay en un
     lugar. Sirve a la vez de carga inicial y de reajuste.
     """
 
@@ -82,8 +82,8 @@ class LinenMovement(TimeStampedModel):
     void_reason = models.CharField(max_length=200, blank=True)
 
     class Meta:
-        verbose_name = 'Movimiento de lencería'
-        verbose_name_plural = 'Movimientos de lencería'
+        verbose_name = 'Movimiento de hotelería'
+        verbose_name_plural = 'Movimientos de hotelería'
         ordering = ['-occurred_at', '-id']
         indexes = [
             models.Index(fields=['company', 'occurred_at'], name='linen_company_at_idx'),
@@ -112,7 +112,7 @@ class LinenMovement(TimeStampedModel):
 
 
 class LinenMovementLine(models.Model):
-    """Cuántas piezas de un tipo de lencería mueve (o cuenta) el movimiento."""
+    """Cuántas piezas de un tipo de hotelería mueve (o cuenta) el movimiento."""
 
     movement = models.ForeignKey(LinenMovement, on_delete=models.CASCADE, related_name='lines')
     garment_type = models.ForeignKey(GarmentType, on_delete=models.PROTECT, related_name='+')

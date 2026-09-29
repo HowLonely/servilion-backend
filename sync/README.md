@@ -13,11 +13,11 @@ La planta trabaja siempre contra su servidor local. Ese servidor le envía a la 
 
 | Dato | Se escribe en | Política |
 |---|---|---|
-| Pesaje, digitalización, empaque, despacho, despacho de lencería | Solo servidor local (`@plant_only`: la nube responde 409) | La planta manda |
+| Pesaje, digitalización, empaque, despacho, despacho de hotelería | Solo servidor local (`@plant_only`: la nube responde 409) | La planta manda |
 | `ref`, `HD-2026-0001`, cupo express | Solo servidor local | Un solo emisor: nunca se repiten |
-| Recepción y entrega en faena, reparto y retiro de lencería | Nube (app móvil) | Se suman a la guía sin pisar lo de planta |
+| Recepción y entrega en faena, reparto y retiro de hotelería | Nube (app móvil) | Se suman a la guía sin pisar lo de planta |
 | Usuarios, roles, catálogo, trabajadores | Ambos (web y terminal) | Gana la edición más reciente |
-| Conteo y anulación de lencería | Nube (web) | Gana la edición más reciente |
+| Conteo y anulación de hotelería | Nube (web) | Gana la edición más reciente |
 
 `ALLOW_PLANT_OPERATIONS=1` habilita las operaciones de planta en un backend `cloud` (desarrollo).
 

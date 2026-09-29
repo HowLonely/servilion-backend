@@ -66,19 +66,19 @@ CASES = [
 
     # Hoteleria es un stock rotativo: la planta despacha, el supervisor reparte
     # y retira en faena (app movil) y el administrador cuenta y anula.
-    ('Despachar lenceria a faena', 'post', '/api/hospitality/dispatches',
+    ('Despachar hoteleria a faena', 'post', '/api/hospitality/dispatches',
      {'company_id': 999999, 'lines': []},
      {'ADMIN', 'DIGITADOR_EMPAQUE'}),
 
-    ('Sincronizar reparto/retiro de lenceria', 'post', '/api/hospitality/field-sync',
+    ('Sincronizar reparto/retiro de hoteleria', 'post', '/api/hospitality/field-sync',
      {'movements': []},
      {'ADMIN', 'SUPERVISOR'}),
 
-    ('Conteo de inventario de lenceria', 'post', '/api/hospitality/counts',
+    ('Conteo de inventario de hoteleria', 'post', '/api/hospitality/counts',
      {'company_id': 999999, 'lines': []},
      {'ADMIN'}),
 
-    ('Anular movimiento de lenceria', 'post', '/api/hospitality/movements/999999/void',
+    ('Anular movimiento de hoteleria', 'post', '/api/hospitality/movements/999999/void',
      {'reason': 'X'},
      {'ADMIN'}),
 

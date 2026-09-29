@@ -116,7 +116,7 @@ class CompanyIn(Schema):
     client_role: str = 'CONTRATISTA'
     tax_id: str = ''
     billing_type: str = 'PRENDAS'
-    # PERSONAL (ropa de trabajador) u HOTELERIA (lencería a granel del
+    # PERSONAL (ropa de trabajador) u HOTELERIA (hotelería a granel del
     # campamento): decide si la empresa opera con guías o con lotes.
     service_type: str = 'PERSONAL'
     delivery_flow: str = 'FLUJO_1'
