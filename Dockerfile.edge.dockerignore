@@ -1,0 +1,41 @@
+# Contenido de la imagen del servidor local de planta (ver Dockerfile.edge).
+#
+# Lista blanca: se excluye todo y se agrega solo lo que la planta usa, así un
+# archivo nuevo del backend no termina en la planta por olvido. Una app nueva
+# hay que agregarla acá; si falta, el build falla en `manage.py check`.
+*
+!manage.py
+!requirements.txt
+!core
+!common
+!authentication
+!camps
+!companies
+!garments
+!hospitality
+!orders
+!sync
+!weighing
+!workers
+
+# Dentro de esas apps, lo que no va a la planta.
+**/__pycache__
+**/*.pyc
+**/*.md
+**/tests.py
+**/admin.py
+
+# Solo nube: reportería del panel web, entrega en habitación de la app móvil y
+# el lado nube de la sincronización (registro de nodos, feed y fotos iniciales).
+orders/report_api.py
+orders/report_schemas.py
+orders/report_services.py
+orders/delivery_api.py
+sync/cloud.py
+sync/node_api.py
+sync/management/commands/sync_register_node.py
+
+# Herramientas de carga de datos y de desarrollo.
+authentication/management/commands/seed_staff.py
+common/management/commands/seed_demo.py
+common/management/commands/import_legacy.py

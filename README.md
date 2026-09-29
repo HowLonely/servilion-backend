@@ -110,7 +110,8 @@ Documentación interactiva en `http://localhost:8000/api/docs`.
 ├── nginx/              # Configuración del Proxy Inverso
 ├── .env / .env.prod    # Variables de entorno (desarrollo / producción)
 ├── docker-compose.yml  # Orquestador de desarrollo (Runserver)
-└── Dockerfile          # Imagen base del contenedor
+├── Dockerfile          # Imagen base del contenedor (nube)
+└── Dockerfile.edge     # Imagen reducida y compilada del servidor local (ver sync/README.md)
 
 ```
 

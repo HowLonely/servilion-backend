@@ -42,6 +42,22 @@ class OrderStatus(models.TextChoices):
     DELIVERED = 'ENTREGADA', 'Entregada'
 
 
+# Estados de trabajo ACTIVO en planta (WIP real): la guía todavía se está
+# procesando y por tanto puede atascarse. COMPLETADA entró aquí al reponerse
+# DESPACHADA como estado propio: ahora significa "morral cerrado, esperando
+# despacho en el andén", que sí es trabajo pendiente y sí se puede atascar.
+# Antes quedaba fuera porque significaba "producida y despachada" e incluirla
+# inflaba el WIP con las ~210k guías históricas — ese archivo ya no estorba,
+# la migración 0014 lo movió a DESPACHADA, que sigue fuera del WIP igual que
+# ENTREGADA: una vez que el morral salió de planta no se atasca en ella.
+IN_PLANT_STATUSES = (
+    OrderStatus.RECEIVED,
+    OrderStatus.QUALITY_CHECK,
+    OrderStatus.INCOMPLETE,
+    OrderStatus.COMPLETED,
+)
+
+
 class ServiceType(models.TextChoices):
     """Tipo de cargo que se elige en la báscula y viaja con el morral.
 

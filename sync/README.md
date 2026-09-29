@@ -42,6 +42,21 @@ La planta trabaja siempre contra su servidor local. Ese servidor le envía a la 
 
 **Ventana local (`window.py`).** El servidor local guarda completo el catálogo y la hotelería, pero solo 90 días de guías y pesajes (más las guías que siguen abiertas). `sync_worker` recorta una vez al día, y solo con el outbox vacío. El recorte no viaja a la nube. El listado del histórico con fechas fuera de la ventana, y el detalle de una guía que ya no está, se reenvían a la nube (`proxy.py`) con el token del nodo; sin internet se responde lo local con `X-Servilion-Source: local`.
 
+## Imagen del servidor local
+
+La planta no recibe el backend completo. CI publica dos imágenes desde este repo:
+
+| Imagen | Dockerfile | Dónde corre |
+|---|---|---|
+| `ghcr.io/howlonely/servilion-backend` | `Dockerfile` | Nube. Todo el código, con fuentes |
+| `ghcr.io/howlonely/servilion-edge` | `Dockerfile.edge` | Servidor local. Solo lo de planta, compilado a bytecode |
+
+La imagen de planta lleva los modelos y migraciones de todas las apps (el esquema tiene que ser idéntico en los dos lados), la API de las terminales, la pantalla TV y el cliente de sincronización. No lleva la reportería (`orders/report_*`), la entrega en habitación de la app móvil (`orders/delivery_api.py`), el lado nube de la sincronización (`sync/cloud.py`, `sync/node_api.py`, `sync_register_node`), el admin, los comandos de carga de datos, los tests ni la documentación. La lista está en `Dockerfile.edge.dockerignore`: es una lista blanca, así que un archivo nuevo no llega a la planta a menos que se agregue.
+
+Para que eso funcione, el código que sí viaja no importa lo exclusivo de la nube: esos routers se montan en `core/api.py` solo cuando `is_edge()` es falso. El build de la imagen corre `manage.py check` y `makemigrations --check` en modo `edge` y falla si algo se rompe.
+
+Las dos imágenes tienen que ser **privadas** en GitHub Packages; la de la nube, sobre todo, porque trae el código fuente completo.
+
 ## Comandos
 
 | Comando | Dónde | Qué hace |

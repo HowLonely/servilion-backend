@@ -42,6 +42,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Imagen reducida y compilada para el servidor local de planta (ver
+      # Dockerfile.edge). Va a un paquete aparte para que la planta nunca pueda
+      # bajar el backend completo. Watchtower la instala sola en la planta.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.edge
+          push: true
+          tags: |
+            ghcr.io/howlonely/servilion-edge:latest
+            ghcr.io/howlonely/servilion-edge:${{ github.sha }}
+          cache-from: type=gha,scope=edge
+          cache-to: type=gha,mode=max,scope=edge
+
   deploy:
     needs: build
     runs-on: ubuntu-latest

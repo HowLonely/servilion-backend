@@ -21,22 +21,7 @@ from django.utils import timezone
 # es lo bastante barato (<80 ms) como para no necesitar caché.
 OPERATIONS_SUMMARY_TTL = 10
 
-from orders.models import LaundryOrder, MissingItemResolution, OrderStatus
-
-# Estados de trabajo ACTIVO en planta (WIP real): la guía todavía se está
-# procesando y por tanto puede atascarse. COMPLETADA entró aquí al reponerse
-# DESPACHADA como estado propio: ahora significa "morral cerrado, esperando
-# despacho en el andén", que sí es trabajo pendiente y sí se puede atascar.
-# Antes quedaba fuera porque significaba "producida y despachada" e incluirla
-# inflaba el WIP con las ~210k guías históricas — ese archivo ya no estorba,
-# la migración 0014 lo movió a DESPACHADA, que sigue fuera del WIP igual que
-# ENTREGADA: una vez que el morral salió de planta no se atasca en ella.
-IN_PLANT_STATUSES = (
-    OrderStatus.RECEIVED,
-    OrderStatus.QUALITY_CHECK,
-    OrderStatus.INCOMPLETE,
-    OrderStatus.COMPLETED,
-)
+from orders.models import IN_PLANT_STATUSES, LaundryOrder, MissingItemResolution, OrderStatus
 
 # Una incidencia de faltante sigue ABIERTA mientras la prenda no se resuelva.
 # Replica `_is_resolving_missing` de services.py, que es quien decide si un

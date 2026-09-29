@@ -8,13 +8,11 @@ from ninja.errors import ValidationError
 from authentication.api import roles_router, router as auth_router, users_router
 from authentication.permissions import PermissionDenied
 from companies.api import clients_router, router as companies_router
-from common.node import PlantOnlyOperation
+from common.node import PlantOnlyOperation, is_edge
 from camps.api import camps_router, faenas_router, rooms_router
 from garments.api import router as garments_router
 from hospitality.api import router as hospitality_router
 from orders.api import router as orders_router
-from orders.delivery_api import router as delivery_router
-from orders.report_api import router as reports_router
 from sync.api import router as sync_router
 from weighing.api import router as weighing_router
 from workers.api import router as workers_router
@@ -70,7 +68,19 @@ api.add_router('/camps/', camps_router, tags=['Campamentos'])
 api.add_router('/rooms/', rooms_router, tags=['Habitaciones'])
 api.add_router('/weighing/', weighing_router, tags=['Pesaje'])
 api.add_router('/orders/', orders_router, tags=['Guías'])
-api.add_router('/delivery/', delivery_router, tags=['Entrega en habitación'])
 api.add_router('/hospitality/', hospitality_router, tags=['Hotelería'])
-api.add_router('/reports/', reports_router, tags=['Reportes'])
 api.add_router('/sync/', sync_router, tags=['Sincronización'])
+
+
+# Solo en la nube: la reportería del panel web, la entrega en habitación de la
+# app móvil de faena y los endpoints a los que se conectan los servidores
+# locales. La planta no los usa y su imagen (`Dockerfile.edge`) no trae estos
+# módulos, por eso se importan acá y no arriba.
+if not is_edge():
+    from orders.delivery_api import router as delivery_router
+    from orders.report_api import router as reports_router
+    from sync.node_api import router as sync_node_router
+
+    api.add_router('/delivery/', delivery_router, tags=['Entrega en habitación'])
+    api.add_router('/reports/', reports_router, tags=['Reportes'])
+    api.add_router('/sync/', sync_node_router, tags=['Sincronización'])
