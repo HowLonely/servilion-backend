@@ -11,7 +11,7 @@ class StaffRole(TimeStampedModel):
     hacer estaba repartido en los decoradores de cada endpoint. Ahora son filas
     editables desde el módulo de configuración (panel web y terminal): un
     administrador puede crear un rol nuevo —ej. "Bodega", solo despacho de
-    lencería— y decidir qué permisos lleva, sin tocar código.
+    hotelería— y decidir qué permisos lleva, sin tocar código.
 
     `permissions` guarda códigos del catálogo `authentication.permissions.PERMISSIONS`.
     Es una lista y no una tabla intermedia porque el catálogo vive en el código

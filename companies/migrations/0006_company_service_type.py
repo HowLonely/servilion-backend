@@ -13,6 +13,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='company',
             name='service_type',
-            field=models.CharField(choices=[('PERSONAL', 'Ropa de trabajador'), ('HOTELERIA', 'Lencería de hotelería')], default='PERSONAL', max_length=10, verbose_name='Tipo de servicio'),
+            field=models.CharField(choices=[('PERSONAL', 'Ropa de trabajador'), ('HOTELERIA', 'Hotelería')], default='PERSONAL', max_length=10, verbose_name='Tipo de servicio'),
         ),
     ]

@@ -11,7 +11,7 @@ class LinenLineIn(Schema):
 
 
 class DispatchIn(Schema):
-    """Despacho de lencería limpia desde la planta a la faena del cliente."""
+    """Despacho de hotelería limpia desde la planta a la faena del cliente."""
 
     company_id: int
     lines: list[LinenLineIn]

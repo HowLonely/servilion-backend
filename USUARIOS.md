@@ -27,15 +27,15 @@ Contraseña para las cinco: **`Servilion.2026`**
 | `demo_admin` | `ADMIN` | Demo Administrador | Catálogo y dinero: clientes, faenas, empresas, trabajadores, prendas, precios y conflictos de sync. Además pasa por encima de cualquier otro permiso. |
 | `demo_supervisor` | `SUPERVISOR` | Demo Supervisor | La operación completa: pesa, digitaliza, empaca, confirma la recepción del morral limpio en faena, registra la entrega en habitación y ve la reportería. No administra el catálogo. |
 | `demo_pesaje` | `PESAJE` | Demo Pesaje | Estación 1 de Antofagasta: pesa el morral sucio al llegar, cuenta sus prendas e imprime las etiquetas. |
-| `demo_ot` | `DIGITADOR_OT` | Demo Digitador OT | Estación 2 de Antofagasta: digitaliza la OT física que llega con la ropa sucia, y recibe las cargas de lencería del campamento. |
-| `demo_empaque` | `DIGITADOR_EMPAQUE` | Demo Digitador Empaque | Estación 3 de Antofagasta: pistolea el morral limpio al empacarlo, lo despacha, resuelve las guías incompletas y cuenta la salida de la lencería. |
+| `demo_ot` | `DIGITADOR_OT` | Demo Digitador OT | Estación 2 de Antofagasta: digitaliza la OT física que llega con la ropa sucia, y recibe las cargas de hotelería del campamento. |
+| `demo_empaque` | `DIGITADOR_EMPAQUE` | Demo Digitador Empaque | Estación 3 de Antofagasta: pistolea el morral limpio al empacarlo, lo despacha, resuelve las guías incompletas y cuenta la salida de la hotelería. |
 
 Dónde entran:
 
 - **Panel web** — `http://localhost:3000/login`
 - **Terminal de escritorio** (`servilion-desktop`) — misma cuenta; el menú ofrece
   solo las estaciones que el rol habilita (pesaje, digitalización, empaque y
-  lencería de hotelería). `PESAJE` **solo** entra acá: su puesto no tiene ninguna
+  hotelería). `PESAJE` **solo** entra acá: su puesto no tiene ninguna
   pantalla en el panel web, que se lo dice en vez de dejarlo en un panel vacío.
 - **Admin de Django** (`http://localhost:8000/admin`) — **no**: estas cuentas son
   `is_staff=False` a propósito. Su alcance es la API. Para el admin sigue estando
@@ -61,10 +61,10 @@ backend. `ADMIN` no aparece en las filas porque las atraviesa todas.
 | Recepción del morral limpio en faena | `POST /api/orders/{id}/clean-reception` | `SUPERVISOR` |
 | Entrega en habitación | `POST /api/orders/{id}/deliver` | `SUPERVISOR` |
 | Reportería / torre de control | `GET /api/reports/...` | `SUPERVISOR` |
-| Despachar lencería limpia de la planta a la faena | `POST /api/hospitality/dispatches` | `DIGITADOR_EMPAQUE` |
+| Despachar hotelería limpia de la planta a la faena | `POST /api/hospitality/dispatches` | `DIGITADOR_EMPAQUE` |
 | Repartir a un campamento / retirar sucio (app móvil) | `POST /api/hospitality/field-sync` | `SUPERVISOR` |
-| Conteo de inventario de lencería (carga inicial y reajustes) | `POST /api/hospitality/counts` | `ADMIN` |
-| Anular un movimiento de lencería | `POST /api/hospitality/movements/{id}/void` | `ADMIN` |
+| Conteo de inventario de hotelería (carga inicial y reajustes) | `POST /api/hospitality/counts` | `ADMIN` |
+| Anular un movimiento de hotelería | `POST /api/hospitality/movements/{id}/void` | `ADMIN` |
 | Clientes, empresas, faenas, campamentos, trabajadores, prendas, precios, conflictos | `POST/PUT/DELETE` de esos módulos | `ADMIN` |
 
 El despacho del morral es un paso propio y no el mismo botón que el cierre: un
@@ -103,7 +103,7 @@ docker compose exec api_servilion python manage.py shell < scripts/check_role_ma
    registra la entrega en habitación y revisa la torre de control.
 
 Para recorrer hotelería, que es el otro servicio: `demo_empaque` despacha
-lencería limpia a la faena de una empresa con `service_type = HOTELERIA`,
+hotelería limpia a la faena de una empresa con `service_type = HOTELERIA`,
 `demo_supervisor` la reparte a un campamento y retira el sucio desde la app
 móvil, y `demo_admin` ve los saldos en la web y hace los conteos de inventario.
 

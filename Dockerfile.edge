@@ -1,0 +1,44 @@
+# Imagen del servidor local de planta (la instala el repo servilion-local).
+#
+# La planta tiene que operar sin internet, pero no necesita el backend completo
+# de la nube. Esta imagen lleva:
+#   - los modelos y migraciones de todas las apps: el esquema tiene que ser
+#     idéntico al de la nube para que la sincronización funcione;
+#   - la API que usan las terminales Servilion Desktop y la pantalla TV;
+#   - el cliente de sincronización (sync_bootstrap, sync_worker, sync_prune).
+# No lleva la reportería del panel web, la API de la app móvil de faena, el lado
+# nube de la sincronización, el admin de Django, las herramientas de carga de
+# datos, los tests ni la documentación. Qué entra y qué no se decide en
+# Dockerfile.edge.dockerignore.
+#
+# Además el código viaja compilado: la imagen trae bytecode, no fuentes.
+
+FROM python:3.11-slim AS build
+
+WORKDIR /app
+COPY . .
+# `-b` deja cada .pyc junto a su módulo y no en __pycache__, que es donde Python
+# lo busca cuando el .py no está. manage.py queda como fuente: es el lanzador
+# estándar de Django y servilion-local lo llama por su nombre.
+RUN python -m compileall -b -q -x '^\./manage\.py$' . \
+    && find . -name '*.py' ! -path './manage.py' -delete \
+    && find . -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY --from=build /app .
+
+# El build falla si algo de lo que viaja importa un módulo que se quedó afuera
+# (`check` carga la URLconf y con ella toda la API) o si alguna migración no se
+# cargó desde bytecode (`makemigrations` vería cambios pendientes).
+RUN SECRET_KEY=build-check SERVILION_NODE=edge REDIS_URL= \
+    sh -c 'python manage.py check && python manage.py makemigrations --check --dry-run'

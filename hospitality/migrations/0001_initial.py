@@ -46,10 +46,10 @@ class Migration(migrations.Migration):
             name='LinenBatchItem',
             fields=[
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('custom_name', models.CharField(blank=True, max_length=60, verbose_name='Lencería fuera de catálogo')),
+                ('custom_name', models.CharField(blank=True, max_length=60, verbose_name='Hotelería fuera de catálogo')),
                 ('quantity_in', models.PositiveIntegerField(verbose_name='Cantidad recibida')),
                 ('quantity_out', models.PositiveIntegerField(blank=True, null=True, verbose_name='Cantidad devuelta')),
-                ('weight_kg', models.DecimalField(blank=True, decimal_places=2, max_digits=8, null=True, verbose_name='Peso de esta lencería (kg)')),
+                ('weight_kg', models.DecimalField(blank=True, decimal_places=2, max_digits=8, null=True, verbose_name='Peso de esta hotelería (kg)')),
                 ('batch', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='items', to='hospitality.linenbatch')),
                 ('garment_type', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name='+', to='garments.garmenttype')),
             ],

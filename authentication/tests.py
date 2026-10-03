@@ -28,11 +28,11 @@ class UsersAndRolesTests(TestCase):
 
     def test_admin_creates_a_role_and_assigns_it(self):
         response = self.call(self.admin, 'post', '/api/roles/', {
-            'name': 'Bodega Lencería', 'permissions': [Perm.LINEN_DISPATCH, Perm.LINEN_VIEW],
+            'name': 'Bodega Hotelería', 'permissions': [Perm.LINEN_DISPATCH, Perm.LINEN_VIEW],
         })
         self.assertEqual(response.status_code, 201, response.content)
         role = response.json()
-        self.assertEqual(role['code'], 'BODEGA_LENCERIA')
+        self.assertEqual(role['code'], 'BODEGA_HOTELERIA')
 
         response = self.call(self.admin, 'post', '/api/users/', {
             'username': 'bodega1', 'first_name': 'Rosa', 'role': role['code'], 'password': 'Lavanderia.2026',

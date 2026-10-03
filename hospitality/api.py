@@ -28,7 +28,7 @@ router = Router(auth=JWTAuth())
 
 @router.get('/balances', response=List[CompanyBalanceOut])
 def get_balances(request, company_id: int | None = None):
-    """Dónde está la lencería de cada cliente: Servilion, bodega de faena y campamentos.
+    """Dónde está la hotelería de cada cliente: Servilion, bodega de faena y campamentos.
 
     Sin `company_id` trae todos los clientes de hotelería: es lo que baja la app
     móvil para ver el saldo del campamento sin señal.
@@ -61,7 +61,7 @@ def list_movements(
 @require_permission(Perm.LINEN_DISPATCH)
 @plant_only
 def register_dispatch(request, payload: DispatchIn):
-    """Despacho de lencería limpia desde la planta a la faena del cliente."""
+    """Despacho de hotelería limpia desde la planta a la faena del cliente."""
     try:
         movement = services.register_dispatch(
             payload.company_id, payload.lines, user=request.auth, note=payload.note

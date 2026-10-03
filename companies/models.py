@@ -107,16 +107,16 @@ class Company(TimeStampedModel):
         PERSONAL es el caso histórico: el morral de un trabajador, con su OT
         física, su habitación y su entrega individual.
 
-        HOTELERIA es lencería a granel del campamento (sábanas, toallas,
+        HOTELERIA es hotelería a granel del campamento (sábanas, toallas,
         cortinas): no hay persona ni pieza de destino, llega por carga y se
         devuelve al mandante. El sistema antiguo no sabía representarlo y lo
-        forzó creando trabajadores falsos con el nombre del tipo de lencería
+        forzó creando trabajadores falsos con el nombre del tipo de hotelería
         (ej. "200 JUEGOS DE SABANAS", RUT "0"), apuntados a una pieza inventada.
         Marcar el contrato aquí es lo que permite dejar de hacer eso.
         """
 
         PERSONAL = 'PERSONAL', 'Ropa de trabajador'
-        HOSPITALITY = 'HOTELERIA', 'Lencería de hotelería'
+        HOSPITALITY = 'HOTELERIA', 'Hotelería'
 
     class DeliveryFlow(models.TextChoices):
         """Modalidad de contrato (FLUJO_NEGOCIO.md §2).

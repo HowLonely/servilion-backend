@@ -82,7 +82,7 @@ class Command(BaseCommand):
         return {
             'Órdenes': LaundryOrder.objects.count(),
             'Pesajes': WeighIn.objects.count(),
-            'Movimientos lencería': LinenMovement.objects.count(),
+            'Movimientos hotelería': LinenMovement.objects.count(),
             'Trabajadores': Worker.objects.count(),
             'Empresas': Company.objects.count(),
             'Clientes': Client.objects.count(),
@@ -176,7 +176,7 @@ class Command(BaseCommand):
             ('TOA', 'Toalla'),
             ('SAB', 'Sábana'),
         ):
-            # Toalla y sábana circulan también como lencería de hotelería.
+            # Toalla y sábana circulan también como hotelería.
             garments[code] = GarmentType.objects.create(code=code, name=name, is_linen=code in ('TOA', 'SAB'))
 
         price_maps = {
@@ -382,7 +382,7 @@ class Command(BaseCommand):
 
     @staticmethod
     def _create_hospitality(now, company, camps, garments, users):
-        """Stock rotativo de lencería con todos los movimientos y un saldo negativo.
+        """Stock rotativo de hotelería con todos los movimientos y un saldo negativo.
 
         El campamento Norte termina con toallas en negativo a propósito: es el
         aviso que la web muestra para pedir un conteo de inventario.

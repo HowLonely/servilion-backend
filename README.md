@@ -5,7 +5,7 @@
 
 Este repositorio contiene la arquitectura backend de **Servilion**, construida sobre **Django 5.x** y **Django Ninja**.
 
-Servilion es una lavandería industrial de Antofagasta que atiende campamentos mineros. El sistema reemplaza una base Access heredada y cubre **dos servicios distintos** que comparten planta pero no proceso: la ropa personal de los trabajadores en faena y la lencería a granel de la hotelería del campamento.
+Servilion es una lavandería industrial de Antofagasta que atiende campamentos mineros. El sistema reemplaza una base Access heredada y cubre **dos servicios distintos** que comparten planta pero no proceso: la ropa personal de los trabajadores en faena y la hotelería a granel de la hotelería del campamento.
 
 > El detalle operativo del negocio vive en [`FLUJO_NEGOCIO.md`](FLUJO_NEGOCIO.md); el mapeo con el sistema Access heredado, en [`DB_DICCIONARIO.md`](DB_DICCIONARIO.md). Este README describe qué hace el sistema y cómo levantarlo.
 
@@ -34,13 +34,13 @@ La unidad es la **guía**: el morral de una persona, que debe volver completo a 
 
 ### 🛏 Servicio de hotelería — stock rotativo (`hospitality`)
 
-La lencería de hotelería (sábanas, toallas…) es un **stock del cliente que rota** entre la planta y sus campamentos: lo que sale limpio hacia un campamento no es lo mismo que llegó sucio de él. Por eso no se controla por carga, sino **dónde está cada pieza**. Es un módulo **separado a propósito** de las guías: aquí no hay persona, ni habitación, ni pistoleo prenda por prenda.
+La hotelería (sábanas, toallas…) es un **stock del cliente que rota** entre la planta y sus campamentos: lo que sale limpio hacia un campamento no es lo mismo que llegó sucio de él. Por eso no se controla por carga, sino **dónde está cada pieza**. Es un módulo **separado a propósito** de las guías: aquí no hay persona, ni habitación, ni pistoleo prenda por prenda.
 
 * **Movimientos**: *despacho* de la planta a la faena (con guía impresa y correlativo `HD-2026-0001`), *reparto* de la faena a un campamento y *retiro* del sucio de un campamento. El reparto y el retiro se registran en faena desde la app móvil, sin señal si hace falta, con GPS e idempotencia.
 * **Saldos calculados**, nunca guardados: por **campamento**, **por repartir en faena** (despachado − repartido) y **en poder de Servilion** (retirado − despachado). Un retiro mayor que el saldo se registra igual y el campamento queda marcado en negativo.
 * **Conteo de inventario**: el administrador fija lo contado en un campamento o en la bodega de faena. Sirve de carga inicial y de reajuste; los movimientos anteriores al conteo ya quedan dentro de lo contado.
 * **Anulación** con motivo, solo administrador: el movimiento queda en el historial y sale de los saldos.
-* Los tipos de lencería salen del catálogo de prendas marcados como *de hotelería*.
+* Los tipos de hotelería salen del catálogo de prendas marcados como *de hotelería*.
 
 > El sistema Access heredado no sabía representar esto y lo forzó dentro de las guías, creando trabajadores falsos llamados `200 JUEGOS DE SABANAS` —con RUT `0` y una habitación inventada—. Este módulo existe para no repetir ese apaño.
 
@@ -105,12 +105,13 @@ Documentación interactiva en `http://localhost:8000/api/docs`.
 ├── garments/           # Catálogo de tipos de prenda
 │
 ├── orders/             # Servicio a trabajadores: guías, empaque, entrega y reportes
-├── hospitality/        # Servicio de hotelería: stock rotativo de lencería por campamento
+├── hospitality/        # Servicio de hotelería: stock rotativo de hotelería por campamento
 │
 ├── nginx/              # Configuración del Proxy Inverso
 ├── .env / .env.prod    # Variables de entorno (desarrollo / producción)
 ├── docker-compose.yml  # Orquestador de desarrollo (Runserver)
-└── Dockerfile          # Imagen base del contenedor
+├── Dockerfile          # Imagen base del contenedor (nube)
+└── Dockerfile.edge     # Imagen reducida y compilada del servidor local (ver sync/README.md)
 
 ```
 
@@ -186,7 +187,7 @@ Para mantener la coherencia del sistema, **no programar lógica dentro de las vi
 
 El siguiente comando elimina y reemplaza todos los datos de negocio: OT,
 clientes, empresas, trabajadores, faenas, campamentos, habitaciones, prendas,
-precios, pesajes, conflictos y movimientos de lencería de hotelería. Las cuentas de acceso de
+precios, pesajes, conflictos y movimientos de hotelería. Las cuentas de acceso de
 `authentication.User` se conservan sin modificar ID, contraseña ni rol.
 
 ```bash

@@ -1,10 +1,12 @@
 """En qué nodo corre este backend: la nube (api.servilion.cl) o el servidor local de la planta.
 
-El mismo código corre en los dos lados. Lo que cambia es quién puede escribir
-qué (ver `sync/README.md`):
+Los dos lados corren este mismo código, pero el servidor local recibe solo la
+parte que la planta usa (ver `Dockerfile.edge`): lo exclusivo de la nube se
+monta únicamente cuando `is_edge()` es falso. Lo que cambia es quién puede
+escribir qué (ver `sync/README.md`):
 
 - El **servidor local** de la planta de Antofagasta es el único que opera el
-  morral: pesaje, digitalización, empaque, despacho y despacho de lencería. Es
+  morral: pesaje, digitalización, empaque, despacho y despacho de hotelería. Es
   también el único que emite correlativos (`ref`, `HD-2026-0001`), porque dos
   emisores sin conexión entre sí terminarían repitiendo números.
 - La **nube** recibe esa operación sincronizada, atiende a la app móvil de faena
